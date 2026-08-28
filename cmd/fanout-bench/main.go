@@ -114,12 +114,22 @@ func run(ctx context.Context, args []string) error {
 	if cfg.Host != "" {
 		return bench.RunRemote(ctx, cfg, version, os.Stdout)
 	}
-	report, err := runner.Run(ctx)
-	if err != nil {
-		return err
+	report, runErr := runner.Run(ctx)
+	if report == nil {
+		return runErr
 	}
+	// A partial report is still written: the suite is tens of minutes of load,
+	// and the phases that did complete are worth keeping. Such a report is
+	// marked failed and says why.
 	if err := bench.WriteArtifacts(cfg.OutputDir, *report); err != nil {
+		if runErr != nil {
+			return runErr
+		}
 		return fmt.Errorf("write artifacts: %w", err)
+	}
+	if runErr != nil {
+		fmt.Printf("\nPartial artifacts\n  %s\n  %s\n", filepath.Join(cfg.OutputDir, "report.json"), filepath.Join(cfg.OutputDir, "report.md"))
+		return runErr
 	}
 	fmt.Printf("\nArtifacts\n  %s\n  %s\n  %s\n", filepath.Join(cfg.OutputDir, "report.json"), filepath.Join(cfg.OutputDir, "report.md"), filepath.Join(cfg.OutputDir, "samples.jsonl"))
 	if !report.Summary.Passed {

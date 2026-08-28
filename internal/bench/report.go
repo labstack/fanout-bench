@@ -106,7 +106,7 @@ func printTrialLine(w io.Writer, t Trial) {
 		resultIcon(t.Classification), formatNumber(t.AcceptedPerSecond), t.AcceptanceRatio*100,
 		t.Resources.AverageCPUCores, formatBytes(t.Resources.PeakRSSBytes), t.Classification)
 	if t.QueryLatency.Count > 0 {
-		fmt.Fprintf(w, "       reads %.1f/s  attempted %s  p50 %.1fms  p95 %.1fms  p99 %.1fms  errors %d  shed %d\n", float64(t.QueryLatency.Count)/t.ElapsedSeconds, formatNumber(float64(t.QueryAttempts)), t.QueryLatency.P50Ms, t.QueryLatency.P95Ms, t.QueryLatency.P99Ms, t.QueryFailures, t.QueryShed)
+		fmt.Fprintf(w, "       reads %.1f/s  attempted %s  p50 %.1fms  p95 %.1fms  p99 %.1fms  errors %d  shed %d\n", perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds), formatNumber(float64(t.QueryAttempts)), t.QueryLatency.P50Ms, t.QueryLatency.P95Ms, t.QueryLatency.P99Ms, t.QueryFailures, t.QueryShed)
 	}
 }
 
@@ -144,7 +144,7 @@ func Markdown(r Report) string {
 	}{{"Traces (spans)", r.Summary.PeakTraces}, {"Logs (records)", r.Summary.PeakLogs}, {"Metrics (data points)", r.Summary.PeakMetrics}, {"Mixed peak", r.Summary.PeakMixed}, {"Mixed sustained", r.Summary.SustainedMixed}} {
 		fmt.Fprintf(&b, "| %s | %s | %s | %.2f cores | %s |\n", row.name, formatNumber(row.peak.AcceptedPerSecond), formatNumber(row.peak.OfferedPerSecond), row.peak.AverageCPUCores, formatBytes(row.peak.PeakRSSBytes))
 	}
-	fmt.Fprintf(&b, "\n**Meaning:** accepted throughput is the delta of `fanout_ingest_rows_total` divided by measured wall time. It is not telemetrygen's requested or locally generated count.\n\n")
+	fmt.Fprintf(&b, "\n**Meaning:** accepted throughput is the delta of `fanout_ingest_rows_total` divided by the interval between the two counter scrapes that bracket the phase. It is not telemetrygen's requested or locally generated count.\n\n")
 	fmt.Fprintf(&b, "## Test identity\n\n| Setting | Value |\n|---|---|\n")
 	settings := [][2]string{{"Fanout version", display(r.Build.FanoutVersion)}, {"Fanout commit", display(r.Build.FanoutCommit)}, {"Fanout artifact", display(r.Build.FanoutArtifact)}, {"Harness", r.Build.HarnessVersion + " (`" + r.Build.HarnessCommit + "`)"}, {"telemetrygen", display(r.Build.TelemetrygenVersion)}, {"Machine", fmt.Sprintf("%s/%s · %s · %d logical CPUs · %s RAM", r.Host.OS, r.Host.Architecture, display(r.Host.CPUModel), r.Host.LogicalCPUs, formatBytes(float64(r.Host.MemoryBytes)))}, {"Generator placement", map[bool]string{true: "same host as Fanout", false: "separate/remote"}[r.Host.GeneratorLocal]}, {"Preset", r.Settings.Preset}, {"Transport", r.Settings.Transport}, {"Batch size", fmt.Sprintf("%d", r.Settings.BatchSize)}, {"Trace shape", "1 parent + 1 child span per telemetrygen trace tick"}, {"Repeat", fmt.Sprintf("%d", r.Settings.Repeat)}, {"Sample interval", fmt.Sprintf("%.1fs", r.Settings.SampleSeconds)}, {"Workload SHA-256", "`" + r.WorkloadSHA256 + "`"}}
 	for _, row := range settings {
@@ -165,7 +165,7 @@ func Markdown(r Report) string {
 			if t.Spec.Signal != Mixed || t.Spec.QueryRate <= 0 {
 				continue
 			}
-			fmt.Fprintf(&b, "| %s | %.0f | %.1f | %s | %.1fms | %.1fms | %.1fms | %d | %d | %d |\n", t.Spec.Name, t.Spec.QueryRate, float64(t.QueryLatency.Count)/t.ElapsedSeconds, formatNumber(float64(t.QueryAttempts)), t.QueryLatency.P50Ms, t.QueryLatency.P95Ms, t.QueryLatency.P99Ms, t.QueryFailures, t.QueryShed, t.QueryCanceled)
+			fmt.Fprintf(&b, "| %s | %.0f | %.1f | %s | %.1fms | %.1fms | %.1fms | %d | %d | %d |\n", t.Spec.Name, t.Spec.QueryRate, perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds), formatNumber(float64(t.QueryAttempts)), t.QueryLatency.P50Ms, t.QueryLatency.P95Ms, t.QueryLatency.P99Ms, t.QueryFailures, t.QueryShed, t.QueryCanceled)
 		}
 		fmt.Fprintln(&b)
 	}
@@ -257,10 +257,14 @@ func display(v string) string {
 }
 func formatNumber(v float64) string {
 	n := fmt.Sprintf("%.0f", v)
+	sign := ""
+	if strings.HasPrefix(n, "-") {
+		sign, n = "-", n[1:]
+	}
 	for i := len(n) - 3; i > 0; i -= 3 {
 		n = n[:i] + "," + n[i:]
 	}
-	return n
+	return sign + n
 }
 func formatBytes(v float64) string {
 	if v <= 0 {

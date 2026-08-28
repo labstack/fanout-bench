@@ -9,7 +9,7 @@ Fanout Bench drives the official OpenTelemetry `telemetrygen` client, measures w
 The headline is:
 
 ```text
-Fanout accepted rows ÷ measured wall time
+Fanout accepted rows ÷ the interval between the counter scrapes bracketing the phase
 ```
 
 Accepted rows come from `fanout_ingest_rows_total{signal=…}` at the Fanout server. They do **not** come from the offered rate, telemetrygen's intended count, or a client-side queue. The three units are named precisely:

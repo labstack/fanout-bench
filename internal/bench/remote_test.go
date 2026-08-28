@@ -134,3 +134,27 @@ func TestSetupTokenPatternCanBeScrubbed(t *testing.T) {
 		t.Fatal("token remained in log")
 	}
 }
+
+// Evidence collection runs after the whole benchmark. Refusing to overwrite an
+// existing file there would discard a completed run's report.
+func TestCopyEvidenceFileOverwritesPreviousRun(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "fanout.log")
+	destination := filepath.Join(dir, "evidence.log")
+	if err := os.WriteFile(source, []byte("second run\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("first run\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyEvidenceFile(source, destination); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "second run\n" {
+		t.Fatalf("destination=%q", got)
+	}
+}

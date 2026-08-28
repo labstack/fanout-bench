@@ -6,7 +6,7 @@
 |---|---|
 | offered items/s | configured processes × workers × per-worker rate; multiplied by three for mixed load |
 | accepted count | end minus start of Fanout's per-signal `fanout_ingest_rows_total` counter |
-| accepted items/s | total accepted count ÷ measured process wall time |
+| accepted items/s | total accepted count ÷ the interval between the counter scrapes bracketing the phase |
 | acceptance ratio | accepted count ÷ (offered items/s × requested generator duration) |
 
 Wall time includes generator startup and final batch delivery. This makes throughput conservative and prevents final flush time from disappearing from the denominator.
@@ -17,7 +17,7 @@ telemetrygen exports a parent and child span per generated trace, but its limite
 
 | Field | Source and calculation |
 |---|---|
-| average CPU cores | delta of `process_cpu_seconds_total` ÷ wall time |
+| average CPU cores | delta of `process_cpu_seconds_total` ÷ that same scrape-to-scrape interval |
 | peak/end RSS | sampled `process_resident_memory_bytes` |
 | peak/end Go heap | sampled `go_memstats_heap_alloc_bytes` |
 | allocations | delta of `go_memstats_alloc_bytes_total` |

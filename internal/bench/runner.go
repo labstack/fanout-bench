@@ -62,13 +62,13 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 
 	for i := range plan {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return r.abandon(report, err)
 		}
 		spec := plan[i]
 		if spec.Kind == "sustained" && spec.ProcessesPerSignal == 0 {
 			best := bestMixedTopology(report.Trials)
 			if best <= 0 {
-				return nil, errors.New("cannot select sustained topology: mixed sweep accepted no data")
+				return r.abandon(report, errors.New("cannot select sustained topology: mixed sweep accepted no data"))
 			}
 			spec.ProcessesPerSignal = best
 			plan[i] = spec
@@ -76,7 +76,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		fmt.Fprintf(r.Out, "\n  %s  %-18s offered %s items/s for %s\n", phaseIcon(spec.Kind), spec.Name, formatNumber(spec.OfferedPerSecond()), spec.Duration)
 		trial, err := r.runPhase(ctx, spec)
 		if err != nil {
-			return nil, fmt.Errorf("phase %s: %w", spec.Name, err)
+			return r.abandon(report, fmt.Errorf("phase %s: %w", spec.Name, err))
 		}
 		report.Trials = append(report.Trials, trial)
 		printTrialLine(r.Out, trial)
@@ -86,7 +86,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		fmt.Fprintf(r.Out, "\n  ◌ cooldown %s (measuring retained memory)\n", r.Config.Cooldown)
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return r.abandon(report, ctx.Err())
 		case <-time.After(r.Config.Cooldown):
 		}
 		if snap, err := r.scrape(ctx); err == nil {
@@ -100,6 +100,20 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		printSummary(r.Out, *report)
 	}
 	return report, nil
+}
+
+// abandon returns the phases that did complete alongside the error. A suite is
+// tens of minutes of load; discarding every finished phase because the last one
+// failed throws away evidence that is still worth inspecting. The report is
+// marked failed and carries the reason, so it can never be mistaken for a
+// publishable result.
+func (r *Runner) abandon(report *Report, cause error) (*Report, error) {
+	report.FinishedAt = time.Now().UTC()
+	report.Summary = summarize(*report, report.Summary.CooldownRSS, report.Summary.CooldownHeap)
+	report.Summary.Gates = append(report.Summary.Gates, Gate{"run-completed", false, redact(cause.Error(), r.Config.Token, r.Config.QueryCookie)})
+	report.Summary.Passed = false
+	report.Summary.Warnings = append(report.Summary.Warnings, "This run ended before the suite finished. The phases recorded here are partial evidence and must not be published as a result.")
+	return report, cause
 }
 
 func (r *Runner) validate() error {
@@ -149,18 +163,30 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 	go r.sample(phaseCtx, started, samplesDone)
 	queries := newQueryRun()
 	if spec.QueryRate > 0 {
-		queries.start(phaseCtx, r.client, r.Config.QueryURL, r.Config.QueryCookie, spec.QueryRate)
+		// Queries run under the parent context, not the phase context, so that
+		// finish() can drain in-flight requests instead of cancelling them.
+		queries.start(ctx, r.client, r.Config.QueryURL, r.Config.QueryCookie, spec.QueryRate)
 	}
 
 	failures, processCount, runErr := r.runGenerators(ctx, spec)
 	elapsed := time.Since(started).Seconds()
-	cancel()
-	samples := <-samplesDone
-	queries.wait()
 	if runErr != nil && ctx.Err() != nil {
+		cancel()
+		<-samplesDone
+		queries.finish()
 		return Trial{}, ctx.Err()
 	}
+	// Scrape immediately: the accepted delta covers the interval between the two
+	// scrapes, so any wait inserted here would credit rows accepted during that
+	// wait to a shorter interval and inflate the headline rate.
 	after, err := r.scrape(ctx)
+	// window is that scrape-to-scrape interval, and is the only honest
+	// denominator for the accepted delta. elapsed remains the offered-load
+	// duration and stays the denominator for completed queries.
+	window := time.Since(started).Seconds()
+	cancel()
+	samples := <-samplesDone
+	queries.finish()
 	if err != nil {
 		return Trial{}, fmt.Errorf("final metrics: %w", err)
 	}
@@ -171,7 +197,7 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 	}
 	dropped := after.total("fanout_rows_dropped_total", nil) - before.total("fanout_rows_dropped_total", nil)
 	restarted := before.total("process_start_time_seconds", nil) != after.total("process_start_time_seconds", nil)
-	resources := resourceDelta(before, after, samples, elapsed)
+	resources := resourceDelta(before, after, samples, window)
 	if afterDisk >= beforeDisk {
 		resources.DiskGrowthBytes = float64(afterDisk - beforeDisk)
 	}
@@ -183,7 +209,7 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 	trial := Trial{
 		Spec: spec, StartedAt: started.UTC(), ElapsedSeconds: round(elapsed, 3),
 		OfferedPerSecond: spec.OfferedPerSecond(), Accepted: accepted,
-		AcceptedPerSecond: accepted.Total() / elapsed, AcceptanceRatio: ratio,
+		AcceptedPerSecond: perSecond(accepted.Total(), window), AcceptanceRatio: ratio,
 		RowsDropped: dropped, GeneratorProcesses: processCount, GeneratorFailures: failures,
 		ProcessRestarted: restarted, Resources: resources,
 		QueryLatency: queries.hist.snapshot(), QueryAttempts: queries.attempts, QueryFailures: queries.failures,
@@ -366,7 +392,7 @@ func bestMixedTopology(trials []Trial) int {
 		}
 		completion := 1.0
 		if t.Spec.QueryRate > 0 && t.ElapsedSeconds > 0 {
-			completion = (float64(t.QueryLatency.Count) / t.ElapsedSeconds) / t.Spec.QueryRate
+			completion = perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds) / t.Spec.QueryRate
 		}
 		if completion > fallbackCompletion || (completion == fallbackCompletion && t.AcceptedPerSecond > fallbackRate) {
 			fallbackCompletion, fallbackRate, fallbackProcesses = completion, t.AcceptedPerSecond, t.Spec.ProcessesPerSignal
@@ -388,7 +414,7 @@ func queryTargetMet(t Trial) bool {
 	if t.ElapsedSeconds <= 0 {
 		return false
 	}
-	completedRate := float64(t.QueryLatency.Count) / t.ElapsedSeconds
+	completedRate := perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds)
 	return completedRate >= t.Spec.QueryRate*.95 && t.QueryFailures == 0 && t.QueryShed == 0
 }
 
@@ -447,7 +473,7 @@ func summarize(report Report, cooldownRSS, cooldownHeap float64) Summary {
 				continue
 			}
 			queryOK = queryTargetMet(t)
-			completedRate := float64(t.QueryLatency.Count) / t.ElapsedSeconds
+			completedRate := perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds)
 			detail = fmt.Sprintf("%.1f/%.1f completed/s, %d errors, %d shed", completedRate, t.Spec.QueryRate, t.QueryFailures, t.QueryShed)
 			break
 		}
@@ -604,6 +630,16 @@ func redact(value string, secrets ...string) string {
 	return value
 }
 func round(v float64, places int) float64 { p := math.Pow10(places); return math.Round(v*p) / p }
+
+// perSecond keeps a zero or missing duration out of the reports: a trial read
+// back from a truncated or hand-edited report would otherwise render +Inf.
+func perSecond(count, seconds float64) float64 {
+	if seconds <= 0 {
+		return 0
+	}
+	return count / seconds
+}
+
 func boolDetail(ok bool, yes, no string) string {
 	if ok {
 		return yes

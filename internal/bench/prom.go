@@ -92,7 +92,11 @@ func parseHead(head string) (string, map[string]string, error) {
 	labels := map[string]string{}
 	raw := head[open+1 : len(head)-1]
 	for len(strings.TrimSpace(raw)) > 0 {
+		// Prometheus exposition allows a trailing comma after the last label.
 		raw = strings.TrimLeft(raw, " \t,")
+		if raw == "" {
+			break
+		}
 		eq := strings.IndexByte(raw, '=')
 		if eq <= 0 {
 			return "", nil, fmt.Errorf("malformed label")

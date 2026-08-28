@@ -21,6 +21,11 @@ var queryTargets = []string{
 	"/api/observability/logs?window=24h&limit=100",
 }
 
+// maxQueryBody bounds a single dashboard response. A response larger than this
+// is still a success: the server answered, and only the JSON well-formedness
+// check is skipped because the tail was never read.
+const maxQueryBody = 32 << 20
+
 type queryRun struct {
 	wg       sync.WaitGroup
 	hist     *histogram
@@ -28,9 +33,14 @@ type queryRun struct {
 	attempts int64
 	shed     int64
 	canceled int64
+	stop     chan struct{}
+	stopOnce sync.Once
+	cancel   context.CancelFunc
 }
 
-func newQueryRun() *queryRun { return &queryRun{hist: newHistogram()} }
+func newQueryRun() *queryRun {
+	return &queryRun{hist: newHistogram(), stop: make(chan struct{}), cancel: func() {}}
+}
 
 func (q *queryRun) start(ctx context.Context, client *http.Client, base, cookie string, rate float64) {
 	// Two seconds of concurrency keeps the schedule open-loop through normal
@@ -44,29 +54,33 @@ func (q *queryRun) start(ctx context.Context, client *http.Client, base, cookie 
 		workers = 512
 	}
 	interval := time.Duration(float64(time.Second) / rate)
-	jobs := make(chan int)
+	// The queue is buffered so that a tick is shed only when every worker is
+	// busy and the queue is full. An unbuffered channel would also shed
+	// whenever no worker happened to be parked in its receive at that instant,
+	// which reports backpressure the server never caused.
+	jobs := make(chan int, workers)
+	runCtx, cancel := context.WithCancel(ctx)
+	q.cancel = cancel
 	q.wg.Add(workers + 1)
 	for worker := 0; worker < workers; worker++ {
 		go func() {
 			defer q.wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case targetIndex := <-jobs:
-					q.request(ctx, client, base, cookie, targetIndex)
-				}
+			for targetIndex := range jobs {
+				q.request(runCtx, client, base, cookie, targetIndex)
 			}
 		}()
 	}
 	go func() {
 		defer q.wg.Done()
+		defer close(jobs)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		targetIndex := 0
 		for {
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
+				return
+			case <-q.stop:
 				return
 			case <-ticker.C:
 				atomic.AddInt64(&q.attempts, 1)
@@ -79,6 +93,16 @@ func (q *queryRun) start(ctx context.Context, client *http.Client, base, cookie 
 			}
 		}
 	}()
+}
+
+// finish stops the schedule and lets in-flight requests complete before the
+// query context is canceled. Cancelling first would abort responses that were
+// already being read, and those abort as read errors rather than transport
+// errors, which the trial would then count as server failures.
+func (q *queryRun) finish() {
+	q.stopOnce.Do(func() { close(q.stop) })
+	q.wg.Wait()
+	q.cancel()
 }
 
 func (q *queryRun) request(ctx context.Context, client *http.Client, base, cookie string, targetIndex int) {
@@ -99,16 +123,23 @@ func (q *queryRun) request(ctx context.Context, client *http.Client, base, cooki
 		}
 		return
 	}
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxQueryBody+1))
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || readErr != nil || !json.Valid(body) {
+	if readErr != nil {
+		if ctx.Err() != nil {
+			atomic.AddInt64(&q.canceled, 1)
+		} else {
+			atomic.AddInt64(&q.failures, 1)
+		}
+		return
+	}
+	truncated := len(body) > maxQueryBody
+	if resp.StatusCode != http.StatusOK || (!truncated && !json.Valid(body)) {
 		atomic.AddInt64(&q.failures, 1)
 		return
 	}
 	q.hist.record(time.Since(started))
 }
-
-func (q *queryRun) wait() { q.wg.Wait() }
 
 type histogram struct {
 	mu     sync.Mutex

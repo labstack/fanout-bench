@@ -30,3 +30,15 @@ func TestParsePrometheusRejectsMalformedEvidence(t *testing.T) {
 		t.Fatal("expected malformed label error")
 	}
 }
+
+// Prometheus exposition permits a trailing comma in a label set. Rejecting it
+// would abort a phase at its very first scrape.
+func TestParsePrometheusAcceptsTrailingLabelComma(t *testing.T) {
+	snap, err := parsePrometheus(strings.NewReader("fanout_ingest_rows_total{signal=\"spans\",} 5\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := snap.total("fanout_ingest_rows_total", map[string]string{"signal": "spans"}); got != 5 {
+		t.Fatalf("total=%v; want 5", got)
+	}
+}

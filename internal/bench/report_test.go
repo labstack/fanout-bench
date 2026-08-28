@@ -65,3 +65,30 @@ func TestRemoteReproductionCommandIncludesSSHConnection(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatNumberGroupsNegativeValues(t *testing.T) {
+	for input, want := range map[float64]string{-123456: "-123,456", -1234: "-1,234", -999: "-999", 1234567: "1,234,567", 0: "0"} {
+		if got := formatNumber(input); got != want {
+			t.Fatalf("formatNumber(%v)=%q; want %q", input, got, want)
+		}
+	}
+}
+
+// A trial round-tripped from a truncated or hand-edited report can carry a zero
+// duration. Rendering must not print +Inf into the published tables.
+func TestRenderedRatesSurviveZeroElapsedTrial(t *testing.T) {
+	report := fixtureReport()
+	report.Trials[0].ElapsedSeconds = 0
+	report.Trials[0].Spec.QueryRate = 10
+	report.Trials[0].Spec.Signal = Mixed
+	report.Trials[0].QueryLatency = Latency{Count: 5}
+	report.Settings.QueryRate = 10
+	markdown := Markdown(report)
+	var console strings.Builder
+	printTrialLine(&console, report.Trials[0])
+	for name, text := range map[string]string{"markdown": markdown, "console": console.String()} {
+		if strings.Contains(text, "Inf") || strings.Contains(text, "NaN") {
+			t.Fatalf("%s output contains a non-finite rate", name)
+		}
+	}
+}

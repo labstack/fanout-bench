@@ -53,7 +53,10 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	if managed.FanoutPath == "" || managed.TelemetrygenPath == "" || managed.OutputDir == "" {
 		return errors.New("managed paths are required")
 	}
-	stage := filepath.Dir(managed.OutputDir)
+	// Clean first: without it "./results" and "./results/" resolve to different
+	// stage directories, so a trailing slash would silently move the Fanout data
+	// directory and its log somewhere else.
+	stage := filepath.Dir(filepath.Clean(managed.OutputDir))
 	dataDir := filepath.Join(stage, "data")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
@@ -144,7 +147,10 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	scanWG.Add(2)
 	go scan(stdout)
 	go scan(stderr)
-	go func() { processErr = cmd.Wait(); scanWG.Wait(); logFile.Close(); close(processDone) }()
+	// Drain both pipes before Wait: Wait closes them on process exit, so waiting
+	// first truncates the log exactly when Fanout died and the log is the only
+	// evidence of why.
+	go func() { scanWG.Wait(); processErr = cmd.Wait(); logFile.Close(); close(processDone) }()
 	var stopOnce sync.Once
 	stopFanout := func() {
 		stopOnce.Do(func() {
@@ -182,6 +188,14 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	report, runErr := runner.Run(ctx)
 	stopFanout()
 	if runErr != nil {
+		if report != nil {
+			if mkErr := os.MkdirAll(managed.OutputDir, 0o755); mkErr == nil {
+				if writeErr := WriteArtifacts(managed.OutputDir, *report); writeErr == nil {
+					fmt.Fprintf(out, "\nPartial evidence written to %s\n", managed.OutputDir)
+				}
+			}
+			_ = copyEvidenceFile(logPath, filepath.Join(managed.OutputDir, "fanout.log"))
+		}
 		return runErr
 	}
 	verifyCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -211,10 +225,12 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	if err := os.WriteFile(filepath.Join(managed.OutputDir, "fanout-repair.txt"), []byte(repairEvidence+"\n"), 0o600); err != nil {
 		return err
 	}
-	if err := copyEvidenceFile(logPath, filepath.Join(managed.OutputDir, "fanout.log")); err != nil {
+	// Reports first: a failure copying the log must not cost a finished run its
+	// report.json and report.md.
+	if err := WriteArtifacts(managed.OutputDir, *report); err != nil {
 		return err
 	}
-	if err := WriteArtifacts(managed.OutputDir, *report); err != nil {
+	if err := copyEvidenceFile(logPath, filepath.Join(managed.OutputDir, "fanout.log")); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "\nRemote evidence ready\n  %s\n  %s\n  %s\n  %s\n  %s\n", filepath.Join(managed.OutputDir, "report.json"), filepath.Join(managed.OutputDir, "report.md"), filepath.Join(managed.OutputDir, "samples.jsonl"), filepath.Join(managed.OutputDir, "fanout-repair.txt"), filepath.Join(managed.OutputDir, "fanout.log"))
@@ -305,7 +321,9 @@ func copyEvidenceFile(source, destination string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	// Truncate rather than refuse: re-running into the same output directory is
+	// routine, and O_EXCL would fail here after the whole benchmark has run.
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

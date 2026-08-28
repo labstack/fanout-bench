@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -73,5 +74,37 @@ func TestBestMixedTopologyFallsBackToBestReadCompletion(t *testing.T) {
 	}
 	if got := bestMixedTopology(trials); got != 1 {
 		t.Fatalf("got %d want 1", got)
+	}
+}
+
+// A suite that dies in a late phase must still hand back what it measured, and
+// that partial report must be unmistakably marked as unpublishable.
+func TestAbandonKeepsCompletedPhasesAndMarksReportFailed(t *testing.T) {
+	runner := &Runner{Config: Config{Token: "ingest-secret"}}
+	report := &Report{Trials: []Trial{{Spec: PhaseSpec{Name: "traces", Kind: "sweep"}, Accepted: Counts{Spans: 10}, ElapsedSeconds: 5}}}
+	got, err := runner.abandon(report, errors.New("phase mixed: final metrics: ingest-secret leaked"))
+	if err == nil {
+		t.Fatal("abandon dropped the cause")
+	}
+	if got == nil || len(got.Trials) != 1 {
+		t.Fatalf("partial evidence was discarded: %+v", got)
+	}
+	if got.Summary.Passed {
+		t.Fatal("partial report claims the gates passed")
+	}
+	if got.FinishedAt.IsZero() {
+		t.Fatal("partial report has no finish time")
+	}
+	var reason string
+	for _, gate := range got.Summary.Gates {
+		if gate.Name == "run-completed" {
+			reason = gate.Detail
+		}
+	}
+	if reason == "" {
+		t.Fatalf("no run-completed gate: %+v", got.Summary.Gates)
+	}
+	if strings.Contains(reason, "ingest-secret") {
+		t.Fatalf("gate detail leaked the ingest token: %q", reason)
 	}
 }
