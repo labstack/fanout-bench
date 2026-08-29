@@ -198,9 +198,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 		}
 		return runErr
 	}
-	verifyCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	verify := exec.CommandContext(verifyCtx, managed.FanoutPath, "repair", "verify")
+	verify := exec.CommandContext(ctx, managed.FanoutPath, "repair", "verify")
 	verify.Env = env
 	verifyOutput, verifyErr := verify.CombinedOutput()
 	verifyDetail := "authoritative Parquet storage verified"
