@@ -73,7 +73,7 @@ validate_group "${group_args[@]}"
 
 : "${FANOUT_BENCH_HCLOUD_SSH_KEY:?Set FANOUT_BENCH_HCLOUD_SSH_KEY to a registered Hetzner SSH key name (or comma-separated names)}"
 server_type=${FANOUT_BENCH_HCLOUD_TYPE:-ccx33}
-generator_type=${FANOUT_BENCH_HCLOUD_GENERATOR_TYPE:-ccx43}
+generator_type=${FANOUT_BENCH_HCLOUD_GENERATOR_TYPE:-ccx33}
 location=${FANOUT_BENCH_HCLOUD_LOCATION:-fsn1}
 image=${FANOUT_BENCH_HCLOUD_IMAGE:-ubuntu-24.04}
 

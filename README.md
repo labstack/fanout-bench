@@ -31,7 +31,7 @@ just hetzner --fanout-version v2026.10.1-alpha --preset quick
 
 The script runs `just build` before provisioning, creates a private network and two fresh Hetzner Cloud VMs with unique names, waits for SSH on both, runs the harness for each group, and downloads the evidence. Cleanup attempts to delete both servers and then the network on every exit, including failures and Ctrl-C. After three failed attempts it names each resource requiring manual deletion and exits nonzero. Hetzner bills every started hour for each VM, so grouping runs shares the billing time of both machines.
 
-The defaults are a `ccx33` for Fanout (8 dedicated vCPUs, 32 GB RAM) and a separate `ccx43` for generators (16 dedicated vCPUs, 64 GB RAM), both in `fsn1` on `ubuntu-24.04`. OTLP travels over a private network (`10.77.0.0/16`, cloud subnet `10.77.0.0/24`) in that location’s network zone. Override the VM types with `FANOUT_BENCH_HCLOUD_TYPE` and `FANOUT_BENCH_HCLOUD_GENERATOR_TYPE`, and location/image with `FANOUT_BENCH_HCLOUD_LOCATION` and `FANOUT_BENCH_HCLOUD_IMAGE`. The hourly VM cost is **ccx33 hourly rate + ccx43 hourly rate**, plus applicable public IPv4 charges and tax; budget for both machines for every started hour. Check the selected location’s current rates before provisioning. `FANOUT_BENCH_HCLOUD_SSH_KEY` also accepts comma-separated key names. Each invocation shares one temporary known-hosts file across its groups, leaving your SSH known-hosts file untouched. Pass `--ssh-identity ~/.ssh/benchmark` if the registered key is not available through your SSH agent.
+The defaults are a `ccx33` for Fanout (8 dedicated vCPUs, 32 GB RAM) and a separate `ccx33` for generators (8 dedicated vCPUs, 32 GB RAM), both in `fsn1` on `ubuntu-24.04`. OTLP travels over a private network (`10.77.0.0/16`, cloud subnet `10.77.0.0/24`) in that location’s network zone. Override the VM types with `FANOUT_BENCH_HCLOUD_TYPE` and `FANOUT_BENCH_HCLOUD_GENERATOR_TYPE`, and location/image with `FANOUT_BENCH_HCLOUD_LOCATION` and `FANOUT_BENCH_HCLOUD_IMAGE`. The hourly VM cost is **twice the ccx33 hourly rate**, plus applicable public IPv4 charges and tax; budget for both machines for every started hour. Check the selected location’s current rates before provisioning. `FANOUT_BENCH_HCLOUD_SSH_KEY` also accepts comma-separated key names. Each invocation shares one temporary known-hosts file across its groups, leaving your SSH known-hosts file untouched. Pass `--ssh-identity ~/.ssh/benchmark` if the registered key is not available through your SSH agent.
 
 Separate complete sets of `fanout-bench run` flags with a standalone `--`. Groups must be nonempty and use matching SSH port and identity settings (defaults: port 22 and the SSH client's default identity). All groups run in order even if one fails, with a one-line summary per group at the end and a nonzero exit if any failed. They share both VMs, the private network, and both host descriptions; each harness run creates fresh stages and a fresh Fanout data directory. Both VMs and the network are deleted after the last group.
 
@@ -91,7 +91,7 @@ Nothing is installed system-wide. Existing Fanout services and data directories 
 
 The default topology is 8 workers per process at 2,500 items/s per worker with 1,000-item OTLP batches. A mixed step launches the same topology independently for traces, logs, and metrics. Without read load, the sustained proof reruns the mixed topology with the highest **accepted** throughput. With `--query-rate`, it chooses the highest-throughput topology that also completed at least 95% of the requested reads with no errors or scheduler shedding. If no sweep point qualifies, it repeats the best read-completion point and fails the sustained-read quality gate rather than publishing a write-only peak as mixed capacity. Both reports record the selected sustained process count per signal. The wider publish sweep adds independent exporters to get past telemetrygen's per-process limits; see [the source analysis](docs/telemetrygen.md).
 
-For publication runs, dedicate the default ccx33 to Fanout and use the separate ccx43 for generators, with three repetitions. Run ingest-only and read-under-write as two groups sharing the same fresh pair of VMs; see [the publication commands](docs/publishing.md#publication-runs). For example:
+For publication runs, dedicate the default ccx33 to Fanout and use the separate ccx33 for generators, with three repetitions. Run ingest-only and read-under-write as two groups sharing the same fresh pair of VMs; see [the publication commands](docs/publishing.md#publication-runs). For example:
 
 ```sh
 scripts/hetzner.sh \
@@ -104,7 +104,7 @@ scripts/hetzner.sh \
   --output results/publish-read-write-2026-10-14
 ```
 
-Publication runs measure Fanout’s ingest ceiling with all eight ccx33 vCPUs available to Fanout; telemetrygen runs on the separate ccx43 over the private network. A plain `--host` run without the three split flags remains a same-host run, and its report warns about generator contention.
+Publication runs measure Fanout’s ingest ceiling with all eight ccx33 vCPUs available to Fanout; telemetrygen runs on the separate ccx33 over the private network. A plain `--host` run without the three split flags remains a same-host run, and its report warns about generator contention.
 
 ## Read and write together
 
