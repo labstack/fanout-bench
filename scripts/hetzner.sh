@@ -127,9 +127,20 @@ cleanup() {
     exit "$status"
 }
 # Arm cleanup before creation so an interrupted or failed create is covered too.
+benchmark_pid=
+# Invoked indirectly by the signal traps.
+# shellcheck disable=SC2329
+interrupt() {
+    trap '' INT TERM
+    if [[ -n $benchmark_pid ]]; then
+        kill -s "$1" "$benchmark_pid" 2>/dev/null || true
+        wait "$benchmark_pid" || true
+    fi
+    exit "$2"
+}
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'interrupt INT 130' INT
+trap 'interrupt TERM 143' TERM
 hcloud server create --name "$server_name" --type "$server_type" \
     --location "$location" --image "$image" --label purpose=fanout-bench \
     "${key_args[@]}" >/dev/null
@@ -159,14 +170,17 @@ statuses=()
 status=0
 offset=1
 for group_length in "${group_lengths[@]}"; do
-    if bin/fanout-bench run "${@:offset:group_length}" \
+    bin/fanout-bench run "${@:offset:group_length}" \
         --host "root@$ip" --ssh-known-hosts "$known_hosts" \
-        --host-description "Hetzner Cloud $server_type, $location, $image"; then
+        --host-description "Hetzner Cloud $server_type, $location, $image" <&0 &
+    benchmark_pid=$!
+    if wait "$benchmark_pid"; then
         statuses+=(0)
     else
         statuses+=("$?")
         status=1
     fi
+    benchmark_pid=
     offset=$((offset + group_length + 1))
 done
 
