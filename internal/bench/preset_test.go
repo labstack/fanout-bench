@@ -1,9 +1,46 @@
 package bench
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestPublishPlanExtendsEverySweepAndKeepsShape(t *testing.T) {
+	plan, err := Plan(Config{Preset: "publish", Repeat: 2, BatchSize: 1000, QueryRate: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 58 {
+		t.Fatalf("phases=%d want 58", len(plan))
+	}
+	for repetition := 1; repetition <= 2; repetition++ {
+		for _, signal := range []Signal{Traces, Logs, Metrics, Mixed} {
+			var processes []int
+			for _, phase := range plan {
+				if phase.Kind != "sweep" || phase.Repetition != repetition || phase.Signal != signal {
+					continue
+				}
+				processes = append(processes, phase.ProcessesPerSignal)
+				if phase.WorkersPerProcess != 8 || phase.RatePerWorker != 2500 || phase.BatchSize != 1000 || phase.Duration != 30*time.Second || phase.DurationSeconds != 30 {
+					t.Fatalf("publish shape changed: %+v", phase)
+				}
+				if (signal == Mixed && phase.QueryRate != 20) || (signal != Mixed && phase.QueryRate != 0) {
+					t.Fatalf("query load changed: %+v", phase)
+				}
+			}
+			if !slices.Equal(processes, []int{1, 2, 4, 8, 16, 32, 64}) {
+				t.Errorf("%s repetition %d: processes=%v", signal, repetition, processes)
+			}
+		}
+	}
+	if p := plan[0]; p.Kind != "warmup" || p.Duration != 15*time.Second || p.ProcessesPerSignal != 1 {
+		t.Fatalf("warmup changed: %+v", p)
+	}
+	if p := plan[len(plan)-1]; p.Kind != "sustained" || p.Signal != Mixed || p.Duration != 5*time.Minute || p.ProcessesPerSignal != 0 || p.QueryRate != 20 {
+		t.Fatalf("sustained selection or shape changed: %+v", p)
+	}
+}
 
 func TestStandardPlanIsDeterministicAndBalanced(t *testing.T) {
 	cfg := Config{Preset: "standard", Repeat: 1, BatchSize: 1000}

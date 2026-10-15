@@ -87,9 +87,9 @@ Nothing is installed system-wide. Existing Fanout services and data directories 
 |---|---|---:|---:|---|
 | `quick` | 1 topology per signal and mixed | 5s | 10s | installation smoke test |
 | `standard` | 1, 2, 4, 8 processes per signal | 15s | 60s | engineering comparison |
-| `publish` | 1, 2, 4, 8, 16 processes per signal | 30s | 5m | repeatable public evidence |
+| `publish` | 1, 2, 4, 8, 16, 32, 64 processes per signal | 30s | 5m | repeatable public evidence |
 
-The default topology is 8 workers per process at 2,500 items/s per worker with 1,000-item OTLP batches. A mixed step launches the same topology independently for traces, logs, and metrics. Without read load, the sustained proof reruns the mixed topology with the highest **accepted** throughput. With `--query-rate`, it chooses the highest-throughput topology that also completed at least 95% of the requested reads with no errors or scheduler shedding. If no sweep point qualifies, it repeats the best read-completion point and fails the sustained-read quality gate rather than publishing a write-only peak as mixed capacity.
+The default topology is 8 workers per process at 2,500 items/s per worker with 1,000-item OTLP batches. A mixed step launches the same topology independently for traces, logs, and metrics. Without read load, the sustained proof reruns the mixed topology with the highest **accepted** throughput. With `--query-rate`, it chooses the highest-throughput topology that also completed at least 95% of the requested reads with no errors or scheduler shedding. If no sweep point qualifies, it repeats the best read-completion point and fails the sustained-read quality gate rather than publishing a write-only peak as mixed capacity. Both reports record the selected sustained process count per signal. The wider publish sweep adds independent exporters to get past telemetrygen's per-process limits; see [the source analysis](docs/telemetrygen.md).
 
 For publication runs, dedicate the default ccx33 to Fanout and use the separate ccx43 for generators, with three repetitions. Run ingest-only and read-under-write as two groups sharing the same fresh pair of VMs; see [the publication commands](docs/publishing.md#publication-runs). For example:
 
@@ -165,7 +165,7 @@ The terminal output is optimized for decisions:
 ╰─ PASS — report is internally valid ────────────────────────────────╯
 ```
 
-“Valid” means the evidence is internally trustworthy. It does not mean every offered target was sustained. Each phase is separately classified as `target-sustained`, `near-saturation`, `saturated-or-generator-limited`, or `invalid`.
+“Valid” means the evidence is internally trustworthy. It does not mean every offered target was sustained. Each phase is separately classified as `target-sustained`, `generator-limited`, `saturated`, `near-saturation`, `saturated-or-generator-limited`, or `invalid`. Split runs record average generator-host CPU cores and logical CPUs for every trial, from `/proc/stat` reads before and after the phase. After validity and `target-sustained` checks, generator CPU at or above 90% means `generator-limited`; below 90%, an accepted-throughput gain under 10% over the preceding process count for the same signal and repetition means `saturated`. Same-host runs retain the acceptance-ratio fallback. See [metric definitions](docs/metrics.md) for the full rule.
 
 Regenerate Markdown without rerunning load:
 

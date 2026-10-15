@@ -14,6 +14,47 @@ func fixtureReport() Report {
 	return Report{SchemaVersion: SchemaVersion, RunID: "test", StartedAt: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC), Build: Build{HarnessVersion: "v1", HarnessCommit: "abc", TelemetrygenVersion: "v0.157.0", FanoutVersion: "v2026.10.1-alpha"}, Host: Host{OS: "linux", Architecture: "amd64", CPUModel: "AMD EPYC", LogicalCPUs: 8, MemoryBytes: 32 << 30, GeneratorLocal: true}, Settings: Settings{Preset: "quick", Transport: "plaintext gRPC", BatchSize: 1000, SampleSeconds: 1, Methodology: "accepted"}, WorkloadSHA256: strings.Repeat("a", 64), Trials: []Trial{{Spec: PhaseSpec{Name: "traces", Signal: Traces, Kind: "sweep", ProcessesPerSignal: 1, WorkersPerProcess: 2}, ElapsedSeconds: 5, OfferedPerSecond: 2000, AcceptedPerSecond: 1900, AcceptanceRatio: .95, Accepted: Counts{Spans: 9500}, Resources: Resources{AverageCPUCores: 1.2, PeakRSSBytes: 100 << 20}, Classification: "target-sustained"}}, Summary: Summary{PeakTraces: Peak{"traces", 2000, 1900, 1.2, 100 << 20}, Passed: true, Gates: []Gate{{"counters", true, "ok"}}, Warnings: []string{"synthetic"}}, ReproductionCommand: "FANOUT_BENCH_INGEST_TOKEN=… fanout-bench run"}
 }
 
+func TestGeneratorCPUAndSustainedTopologyArtifacts(t *testing.T) {
+	report := fixtureReport()
+	report.Host.GeneratorLocal = false
+	report.Trials[0].GeneratorCPU = &GeneratorCPU{AverageCPUCores: 14.4, LogicalCPUs: 16}
+	sustained := report.Trials[0]
+	sustained.Spec = PhaseSpec{Name: "mixed-sustained", Kind: "sustained", Signal: Mixed, ProcessesPerSignal: 32, WorkersPerProcess: 8}
+	report.Trials = append(report.Trials, sustained)
+	dir := t.TempDir()
+	if err := WriteArtifacts(dir, report); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadReport(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cpu := loaded.Trials[0].GeneratorCPU; cpu == nil || cpu.AverageCPUCores != 14.4 || cpu.LogicalCPUs != 16 {
+		t.Fatalf("CPU measurement lost: %+v", cpu)
+	}
+	if loaded.Trials[1].Spec.ProcessesPerSignal != 32 {
+		t.Fatal("sustained process count missing from JSON")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Generator CPU cores / logical CPUs", "14.40 / 16", "**Sustained mixed topology:** 32 processes per signal, 8 workers per process."} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("Markdown missing %q", want)
+		}
+	}
+	// Older and same-host reports have no generator CPU measurement.
+	legacy := fixtureReport()
+	data, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "generator_cpu") || !strings.Contains(Markdown(legacy), "| n/a |") {
+		t.Fatal("missing generator CPU was presented as measured")
+	}
+}
+
 func TestArtifactsAreCompleteAndContainNoSecrets(t *testing.T) {
 	dir := t.TempDir()
 	report := fixtureReport()

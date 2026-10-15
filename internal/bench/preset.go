@@ -27,7 +27,7 @@ func Plan(cfg Config) ([]PhaseSpec, error) {
 	case "standard":
 		s = shape{[]int{1, 2, 4, 8}, 8, 2_500, 15 * time.Second, 60 * time.Second, 10 * time.Second}
 	case "publish":
-		s = shape{[]int{1, 2, 4, 8, 16}, 8, 2_500, 30 * time.Second, 5 * time.Minute, 15 * time.Second}
+		s = shape{[]int{1, 2, 4, 8, 16, 32, 64}, 8, 2_500, 30 * time.Second, 5 * time.Minute, 15 * time.Second}
 	default:
 		return nil, fmt.Errorf("unknown preset %q (want quick, standard, or publish)", cfg.Preset)
 	}

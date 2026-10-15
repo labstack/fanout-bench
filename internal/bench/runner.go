@@ -22,13 +22,14 @@ import (
 )
 
 type Runner struct {
-	Config       Config
-	Version      string
-	Out          io.Writer
-	DeferSummary bool
-	client       *http.Client
-	queryTargets []queryTarget
-	readSummary  string
+	Config           Config
+	Version          string
+	Out              io.Writer
+	DeferSummary     bool
+	client           *http.Client
+	queryTargets     []queryTarget
+	readSummary      string
+	readGeneratorCPU func(context.Context) (cpuStat, error)
 }
 
 func (r *Runner) Run(ctx context.Context) (*Report, error) {
@@ -86,7 +87,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 			plan[i] = spec
 		}
 		fmt.Fprintf(r.Out, "\n  %s  %-18s offered %s items/s for %s\n", phaseIcon(spec.Kind), spec.Name, formatNumber(spec.OfferedPerSecond()), spec.Duration)
-		trial, err := r.runPhase(ctx, spec)
+		trial, err := r.runPhase(ctx, spec, report.Trials)
 		if err != nil {
 			return r.abandon(report, fmt.Errorf("phase %s: %w", spec.Name, err))
 		}
@@ -166,7 +167,15 @@ func (r *Runner) validate() error {
 	return nil
 }
 
-func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
+func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec, previous []Trial) (Trial, error) {
+	var generatorBefore cpuStat
+	if r.Config.GeneratorSSH != "" {
+		var err error
+		generatorBefore, err = r.generatorCPUStat(ctx)
+		if err != nil {
+			return Trial{}, fmt.Errorf("baseline generator CPU: %w", err)
+		}
+	}
 	before, err := r.scrape(ctx)
 	if err != nil {
 		return Trial{}, fmt.Errorf("baseline metrics: %w", err)
@@ -202,10 +211,22 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 	// duration and stays the denominator for completed queries.
 	window := time.Since(started).Seconds()
 	cancel()
-	samples := <-samplesDone
 	queries.finish()
+	samples := <-samplesDone
+	var generatorCPU *GeneratorCPU
+	var cpuErr error
+	if r.Config.GeneratorSSH != "" {
+		var generatorAfter cpuStat
+		generatorAfter, cpuErr = r.generatorCPUStat(ctx)
+		if cpuErr == nil {
+			generatorCPU, cpuErr = generatorCPUUsage(generatorBefore, generatorAfter)
+		}
+	}
 	if err != nil {
 		return Trial{}, fmt.Errorf("final metrics: %w", err)
+	}
+	if cpuErr != nil {
+		return Trial{}, fmt.Errorf("final generator CPU: %w", cpuErr)
 	}
 	afterDisk, _ := directorySize(r.Config.DataDir)
 	accepted := subtractCounts(acceptedCounts(after), acceptedCounts(before))
@@ -228,13 +249,14 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 		OfferedPerSecond: spec.OfferedPerSecond(), Accepted: accepted,
 		AcceptedPerSecond: perSecond(accepted.Total(), window), AcceptanceRatio: ratio,
 		RowsDropped: dropped, GeneratorProcesses: processCount, GeneratorFailures: failures,
+		GeneratorCPU:     generatorCPU,
 		ProcessRestarted: restarted, Resources: resources,
 		QueryLatency: queries.hist.snapshot(), QueryAttempts: queries.attempts, QueryFailures: queries.failures,
 		QueryKindCompleted: queries.completedByKind(),
 		QueryShed:          queries.shed, QueryCanceled: queries.canceled,
 		Samples: samples,
 	}
-	trial.Classification, trial.ClassificationNotes = classify(trial)
+	trial.Classification, trial.ClassificationNotes = classify(trial, previous)
 	r.readSummary = queries.operationSummary(spec.Name)
 	if trial.Spec.QueryRate > 0 && !queryTargetMet(trial) {
 		trial.ClassificationNotes = append(trial.ClassificationNotes, "the requested query rate was not sustained")
@@ -304,6 +326,10 @@ func generatorCommand(ctx context.Context, cfg Config, duration time.Duration, a
 	for i := range remote {
 		remote[i] = shellQuote(remote[i])
 	}
+	return generatorSSHCommand(ctx, cfg, strings.Join(remote, " ")), cancel
+}
+
+func generatorSSHCommand(ctx context.Context, cfg Config, command string) *exec.Cmd {
 	port := cfg.GeneratorSSHPort
 	if port == 0 {
 		port = 22
@@ -311,8 +337,8 @@ func generatorCommand(ctx context.Context, cfg Config, duration time.Duration, a
 	ssh := []string{"-p", strconv.Itoa(port), "-i", cfg.GeneratorSSHIdentity,
 		"-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
 		"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=" + cfg.GeneratorSSHKnownHosts, cfg.GeneratorSSH, "--", strings.Join(remote, " ")}
-	return exec.CommandContext(ctx, "ssh", ssh...), cancel
+		"-o", "UserKnownHostsFile=" + cfg.GeneratorSSHKnownHosts, cfg.GeneratorSSH, "--", command}
+	return exec.CommandContext(ctx, "ssh", ssh...)
 }
 
 func generatorArgs(cfg Config, signal Signal, spec PhaseSpec) []string {
@@ -401,7 +427,7 @@ func resourceDelta(before, after *snapshot, samples []ResourceSample, elapsed fl
 	return result
 }
 
-func classify(t Trial) (string, []string) {
+func classify(t Trial, previous []Trial) (string, []string) {
 	var notes []string
 	if t.GeneratorFailures > 0 {
 		notes = append(notes, "one or more telemetrygen processes failed")
@@ -415,18 +441,46 @@ func classify(t Trial) (string, []string) {
 	if len(notes) > 0 {
 		return "invalid", notes
 	}
-	switch {
-	case t.Accepted.Total() == 0:
+	if t.Accepted.Total() == 0 {
 		return "invalid", []string{"Fanout accepted no telemetry"}
-	case t.AcceptanceRatio >= .95:
+	}
+	if t.AcceptanceRatio >= .95 {
 		return "target-sustained", nil
+	}
+	if cpu := t.GeneratorCPU; cpu != nil && cpu.LogicalCPUs > 0 {
+		if cpu.AverageCPUCores >= .9*float64(cpu.LogicalCPUs) {
+			return "generator-limited", []string{"generator host averaged at least 90% CPU utilisation"}
+		}
+		if prev := previousSweepTrial(t.Spec, previous); prev != nil && prev.Classification != "invalid" && prev.AcceptedPerSecond > 0 && t.AcceptedPerSecond-prev.AcceptedPerSecond < .1*prev.AcceptedPerSecond {
+			return "saturated", []string{fmt.Sprintf("accepted throughput rose less than 10%% over %s (%d processes per signal) while generator CPU was below 90%%", prev.Spec.Name, prev.Spec.ProcessesPerSignal)}
+		}
+	}
+	switch {
 	case t.AcceptanceRatio >= .80:
 		return "near-saturation", []string{"accepted less than 95% of the requested workload"}
 	default:
+		if t.GeneratorCPU != nil {
+			return "saturated-or-generator-limited", []string{"the target was not sustained; throughput is still scaling or no valid previous sweep point is available"}
+		}
 		return "saturated-or-generator-limited", []string{"the target was not sustained; separate load-generator hosts are needed to attribute the limit"}
 	}
 }
 
+// Compare only the preceding process count in this signal's current repetition.
+// Warmup and sustained phases do not establish sweep plateaus.
+func previousSweepTrial(spec PhaseSpec, trials []Trial) *Trial {
+	if spec.Kind != "sweep" {
+		return nil
+	}
+	var previous *Trial
+	for i := range trials {
+		p := &trials[i]
+		if p.Spec.Kind == "sweep" && p.Spec.Signal == spec.Signal && p.Spec.Repetition == spec.Repetition && p.Spec.ProcessesPerSignal < spec.ProcessesPerSignal && (previous == nil || p.Spec.ProcessesPerSignal > previous.Spec.ProcessesPerSignal) {
+			previous = p
+		}
+	}
+	return previous
+}
 func bestMixedTopology(trials []Trial) int {
 	bestRate, processes := -1.0, 0
 	fallbackCompletion, fallbackRate, fallbackProcesses := -1.0, -1.0, 0
@@ -565,7 +619,13 @@ func settingsFrom(c Config) Settings {
 		SampleInterval: c.SampleInterval, SampleSeconds: c.SampleInterval.Seconds(), GeneratorTimeout: c.GeneratorTimeout,
 		TimeoutSeconds: c.GeneratorTimeout.Seconds(), Cooldown: c.Cooldown, CooldownSeconds: c.Cooldown.Seconds(), DataDir: c.DataDir,
 		QueryURL: c.QueryURL, QueryRate: c.QueryRate, BatchSize: c.BatchSize, TraceChildSpans: 1,
-		Methodology: "Fanout server-side accepted-row counter deltas divided by measured wall time; telemetrygen emits one parent and one child span per trace tick."}
+		Methodology: "Fanout server-side accepted-row counter deltas divided by measured wall time; telemetrygen emits one parent and one child span per trace tick. " +
+			"Split runs bracket each phase with generator-host /proc/stat reads over the generator SSH setup, including startup and export draining. " +
+			"Generator CPU cores = logical CPUs × (total tick delta − idle and iowait tick delta) / total tick delta; guest ticks are not counted twice. " +
+			"Invalid trials take precedence; accepting at least 95% of the target remains target-sustained. Otherwise generator CPU at or above 90% is generator-limited; " +
+			"below 90%, a sweep gain under 10% over the preceding process count for the same signal and repetition is saturated. " +
+			"Without a valid previous sweep point or a plateau, the existing acceptance-ratio classification applies; same-host runs retain that fallback. " +
+			"The sustained phase uses the mixed sweep topology with highest accepted throughput meeting the read target, or the best read-completion fallback if none qualifies."}
 }
 
 func workloadHash(settings Settings, plan []PhaseSpec) string {
