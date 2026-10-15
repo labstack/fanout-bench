@@ -32,6 +32,22 @@ CPU is the Fanout process only. On a same-host run it does not include telemetry
 
 The sampled series above, plus `fanout_rows_dropped_total`, `process_start_time_seconds`, `fanout_parquet_publish_waiters`, and `fanout_parquet_publish_timeouts_total`, come from Fanout v2026.10.1-alpha and its registered Go/process collectors.
 
+## Generator resources
+
+Split trials read `/proc/stat` on the generator before and after each phase using the same SSH target, port, identity, known-hosts file, and connection options as telemetrygen. The interval includes startup and final exports. `report.json` records `trials[].generator_cpu.average_cpu_cores` and `logical_cpus`; `report.md` shows both in each phase row. Same-host and older reports omit this measurement and render it as `n/a`.
+
+Average cores = logical CPUs × (Δtotal − Δidle − Δiowait) / Δtotal. Total is the sum of user, nice, system, idle, iowait, irq, softirq, and steal ticks; guest and guest_nice are already included in user/nice and are excluded from the sum. Logical CPUs are counted from the per-CPU lines. This is whole-generator-host utilisation, including other processes, rather than telemetrygen-only CPU. Failed reads, unusable counter deltas, or changed logical CPU counts stop the run with a partial report; they cannot masquerade as idle CPU.
+
+## Limit classification
+
+Invalid trials (generator failures, dropped rows, restarts, or no accepted data) take precedence. Accepting at least 95% of the offered count remains `target-sustained`. For other split trials:
+
+- Generator CPU averaging **at least 90%** of its logical CPUs means `generator-limited`.
+- With generator CPU **below 90%**, a sweep whose accepted items/s rose **less than 10%** over the preceding process count is `saturated`, including a decline. Compare only the same signal and repetition; an invalid or zero-throughput previous point cannot establish saturation. Warmup and sustained phases do not establish sweep plateaus.
+- Otherwise retain the acceptance-ratio fallback: at least 80% is `near-saturation`; below 80% is `saturated-or-generator-limited`. The latter can still occur while split throughput is scaling or no valid prior point is available. Low CPU alone cannot rule out acknowledgement latency or other generator limits; see [telemetrygen's export paths](telemetrygen.md).
+
+Same-host runs keep the existing fallback: at least 95% is `target-sustained`, at least 80% is `near-saturation`, otherwise `saturated-or-generator-limited`. Saturation describes the measured plateau under this workload; it is not proof of a CPU-only server bottleneck.
+
 ## Read workload
 
 Authenticated reads rotate equally across user operations `dashboard-refresh`, `drill-traces` (System overview service-map selection), and `trace-detail`, at 15m, 1h, 6h, 12h, and 24h. A refresh follows `page.tsx`, `use-panel-results.ts`, and `refresh.ts`: one sorted batch of all initially visible panel IDs with the full dashboard spec, range and refresh setting, service All, comparison per spec, and layout widths rounded to 100 pixels for a fixed 1664-pixel viewport. It then sends `POST /api/annotations` with the union of the returned time-panel bounds, when annotations are enabled and those bounds are present.

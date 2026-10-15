@@ -145,6 +145,11 @@ func Markdown(r Report) string {
 		fmt.Fprintf(&b, "| %s | %s | %s | %.2f cores | %s |\n", row.name, formatNumber(row.peak.AcceptedPerSecond), formatNumber(row.peak.OfferedPerSecond), row.peak.AverageCPUCores, formatBytes(row.peak.PeakRSSBytes))
 	}
 	fmt.Fprintf(&b, "\n**Meaning:** accepted throughput is the delta of `fanout_ingest_rows_total` divided by the interval between the two counter scrapes that bracket the phase. It is not telemetrygen's requested or locally generated count.\n\n")
+	for _, t := range r.Trials {
+		if t.Spec.Kind == "sustained" {
+			fmt.Fprintf(&b, "**Sustained mixed topology:** %d processes per signal, %d workers per process.\n\n", t.Spec.ProcessesPerSignal, t.Spec.WorkersPerProcess)
+		}
+	}
 	fmt.Fprintf(&b, "## Test identity\n\n| Setting | Value |\n|---|---|\n")
 	machine := display(r.Host.CPUModel)
 	if r.Host.Description != "" {
@@ -154,9 +159,13 @@ func Markdown(r Report) string {
 	for _, row := range settings {
 		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
 	}
-	fmt.Fprintf(&b, "\n## Complete phase breakdown\n\n| Phase | Signal | Topology | Duration | Offered/s | Accepted/s | Ratio | CPU | Peak RSS | Queue peak | Result |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|\n")
+	fmt.Fprintf(&b, "\n## Complete phase breakdown\n\n| Phase | Signal | Topology (processes per signal × workers) | Duration | Offered/s | Accepted/s | Ratio | Fanout CPU cores | Generator CPU cores / logical CPUs | Peak RSS | Queue peak | Result |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n")
 	for _, t := range r.Trials {
-		fmt.Fprintf(&b, "| %s | %s | %d×%d workers | %.1fs | %s | %s | %.1f%% | %.2f | %s | %.0f | %s |\n", t.Spec.Name, t.Spec.Signal, t.Spec.ProcessesPerSignal, t.Spec.WorkersPerProcess, t.ElapsedSeconds, formatNumber(t.OfferedPerSecond), formatNumber(t.AcceptedPerSecond), t.AcceptanceRatio*100, t.Resources.AverageCPUCores, formatBytes(t.Resources.PeakRSSBytes), t.Resources.PeakQueueDepth, t.Classification)
+		generatorCPU := "n/a"
+		if t.GeneratorCPU != nil {
+			generatorCPU = fmt.Sprintf("%.2f / %d", t.GeneratorCPU.AverageCPUCores, t.GeneratorCPU.LogicalCPUs)
+		}
+		fmt.Fprintf(&b, "| %s | %s | %d×%d workers | %.1fs | %s | %s | %.1f%% | %.2f | %s | %s | %.0f | %s |\n", t.Spec.Name, t.Spec.Signal, t.Spec.ProcessesPerSignal, t.Spec.WorkersPerProcess, t.ElapsedSeconds, formatNumber(t.OfferedPerSecond), formatNumber(t.AcceptedPerSecond), t.AcceptanceRatio*100, t.Resources.AverageCPUCores, generatorCPU, formatBytes(t.Resources.PeakRSSBytes), t.Resources.PeakQueueDepth, t.Classification)
 	}
 	fmt.Fprintf(&b, "\n## Quality gates\n\n")
 	for _, gate := range r.Summary.Gates {

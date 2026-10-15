@@ -175,6 +175,11 @@ type Gate struct {
 	Detail string `json:"detail"`
 }
 
+type GeneratorCPU struct {
+	AverageCPUCores float64 `json:"average_cpu_cores"`
+	LogicalCPUs     int     `json:"logical_cpus"`
+}
+
 type Trial struct {
 	Spec                PhaseSpec        `json:"settings"`
 	StartedAt           time.Time        `json:"started_at"`
@@ -186,6 +191,7 @@ type Trial struct {
 	RowsDropped         float64          `json:"rows_dropped"`
 	GeneratorProcesses  int              `json:"generator_processes"`
 	GeneratorFailures   int              `json:"generator_failures"`
+	GeneratorCPU        *GeneratorCPU    `json:"generator_cpu,omitempty"`
 	ProcessRestarted    bool             `json:"fanout_restarted"`
 	Resources           Resources        `json:"resources"`
 	QueryLatency        Latency          `json:"query_latency_ms,omitempty"`
