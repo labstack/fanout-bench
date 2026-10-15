@@ -186,7 +186,7 @@ func Markdown(r Report) string {
 	for _, warning := range r.Summary.Warnings {
 		fmt.Fprintf(&b, "- %s\n", warning)
 	}
-	fmt.Fprintf(&b, "\n## Reproduce\n\n```sh\n%s\n```\n\nRaw evidence: `report.json` (authoritative structured report) and `samples.jsonl` (time-series resource samples).\n", r.ReproductionCommand)
+	fmt.Fprintf(&b, "\n## Reproduce\n\n```sh\n%s\n```\n\nRaw evidence: `report.json` (authoritative structured report) and `samples.jsonl` (time-series resource samples, including cumulative `rollup_seconds`, `write_gate_hold_seconds`, `write_gate_wait_seconds`, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, and `ingest_backpressure_seconds_total`, plus the current `compaction_backlog_batches` gauge when available).\n", r.ReproductionCommand)
 	return b.String()
 }
 
