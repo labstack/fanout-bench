@@ -13,7 +13,7 @@ func TestQueryRunMaintainsOpenLoopScheduleThroughLatency(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{}`)
+		fmt.Fprint(w, `{"results":[{"status":"empty"}]}`)
 	}))
 	defer server.Close()
 
@@ -41,7 +41,7 @@ func TestQueryRunFinishDrainsInFlightRequestsWithoutFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"rows":[]}`)
+		fmt.Fprint(w, `{"results":[{"status":"empty"}]}`)
 	}))
 	defer server.Close()
 
@@ -67,7 +67,7 @@ func TestQueryRunFinishDrainsInFlightRequestsWithoutFailures(t *testing.T) {
 func TestQueryRunDoesNotShedWhileWorkersAreAvailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{}`)
+		fmt.Fprint(w, `{"results":[{"status":"empty"}]}`)
 	}))
 	defer server.Close()
 
@@ -86,9 +86,8 @@ func TestQueryRunDoesNotShedWhileWorkersAreAvailable(t *testing.T) {
 	}
 }
 
-// A response larger than the read cap is a success: the server answered, only
-// the tail was left unread.
-func TestQueryRunTreatsOversizeResponseAsSuccess(t *testing.T) {
+// A response above the cap cannot be checked for panel errors and must fail.
+func TestQueryRunTreatsOversizeResponseAsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"rows":"`))
@@ -107,10 +106,7 @@ func TestQueryRunTreatsOversizeResponseAsSuccess(t *testing.T) {
 	queries := newQueryRun()
 	queries.request(context.Background(), &http.Client{Timeout: 30 * time.Second}, server.URL, "session=test", 0)
 
-	if queries.failures != 0 {
-		t.Fatalf("failures=%d; a truncated read was counted as a server error", queries.failures)
-	}
-	if got := queries.hist.snapshot().Count; got != 1 {
-		t.Fatalf("completed=%d; want 1", got)
+	if queries.failures != 1 || queries.hist.snapshot().Count != 0 {
+		t.Fatalf("failures=%d completed=%d; truncated read escaped validation", queries.failures, queries.hist.snapshot().Count)
 	}
 }

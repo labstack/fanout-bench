@@ -17,6 +17,8 @@ var Signals = []Signal{Traces, Logs, Metrics}
 
 type Config struct {
 	Host                string
+	HostDescription     string
+	SSHKnownHosts       string
 	SSHIdentity         string
 	SSHPort             int
 	KeepRemote          bool
@@ -74,6 +76,7 @@ func (p PhaseSpec) OfferedPerSecond() float64 {
 }
 
 type Host struct {
+	Description    string `json:"description,omitempty"`
 	OS             string `json:"os"`
 	Architecture   string `json:"architecture"`
 	CPUModel       string `json:"cpu_model,omitempty"`
@@ -177,6 +180,7 @@ type Trial struct {
 	ProcessRestarted    bool             `json:"fanout_restarted"`
 	Resources           Resources        `json:"resources"`
 	QueryLatency        Latency          `json:"query_latency_ms,omitempty"`
+	QueryKindCompleted  map[string]int64 `json:"query_completed_by_kind,omitempty"`
 	QueryAttempts       int64            `json:"query_attempts,omitempty"`
 	QueryFailures       int64            `json:"query_failures,omitempty"`
 	QueryShed           int64            `json:"query_shed,omitempty"`

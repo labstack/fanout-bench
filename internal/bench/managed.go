@@ -25,6 +25,7 @@ import (
 )
 
 type ManagedConfig struct {
+	HostDescription        string
 	FanoutPath             string
 	TelemetrygenPath       string
 	OutputDir              string
@@ -65,32 +66,19 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	if err != nil {
 		return err
 	}
-	grpcPort, err := freePort()
-	if err != nil {
-		return err
-	}
-	httpOTLPPort, err := freePort()
-	if err != nil {
-		return err
-	}
 	authSecret, err := randomHex(32)
 	if err != nil {
 		return err
 	}
+	metricsToken, err := randomHex(32)
+	if err != nil {
+		return err
+	}
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
-	grpcAddr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
-	metricsURL := "http://" + httpAddr + "/-/metrics"
+	grpcAddr := httpAddr
+	metricsURL := "http://" + httpAddr + "/metrics"
 	baseURL := "http://" + httpAddr
-	env := append(os.Environ(),
-		"FANOUT_DATA_DIR="+dataDir,
-		"FANOUT_AUTH_CODE_SECRET="+authSecret,
-		"FANOUT_METRICS_PUBLIC=true",
-		"FANOUT_MCP_ENABLED=false",
-		"FANOUT_ALERTS_ENABLED=false",
-		"FANOUT_HTTP_ADDR="+httpAddr,
-		"FANOUT_OTLP_GRPC_ADDR="+grpcAddr,
-		fmt.Sprintf("FANOUT_OTLP_HTTP_ADDR=127.0.0.1:%d", httpOTLPPort),
-	)
+	env := fanoutEnvironment(os.Environ(), dataDir, httpAddr, authSecret, metricsToken)
 
 	actualVersion := strings.TrimSpace(commandOutput(managed.FanoutPath, "version"))
 	if actualVersion == "" {
@@ -140,7 +128,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 				line = strings.ReplaceAll(line, match[1], "[REDACTED]")
 			}
 			logMu.Lock()
-			fmt.Fprintln(logFile, line)
+			fmt.Fprintln(logFile, redact(line, authSecret, metricsToken))
 			logMu.Unlock()
 		}
 	}
@@ -183,7 +171,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 		return err
 	}
 
-	cfg := Config{Host: managed.ProvisionedHost, SSHPort: managed.ProvisionedSSHPort, SSHIdentity: managed.ProvisionedSSHIdentity, Preset: managed.Preset, Endpoint: grpcAddr, MetricsURL: metricsURL, Insecure: true, Telemetrygen: managed.TelemetrygenPath, Token: ingestToken, OutputDir: managed.OutputDir, FanoutVersion: actualVersion, FanoutArtifact: managed.FanoutArtifact, DataDir: dataDir, SampleInterval: managed.SampleInterval, GeneratorTimeout: 30 * time.Second, Cooldown: managed.Cooldown, Repeat: managed.Repeat, QueryURL: baseURL, QueryCookie: queryCookie, QueryRate: managed.QueryRate, SameHost: true, BatchSize: managed.BatchSize, TelemetrygenVersion: managed.TelemetrygenVersion, ProcessOverride: managed.ProcessOverride, WorkerOverride: managed.WorkerOverride, RateOverride: managed.RateOverride, DurationOverride: managed.DurationOverride}
+	cfg := Config{Host: managed.ProvisionedHost, HostDescription: managed.HostDescription, SSHPort: managed.ProvisionedSSHPort, SSHIdentity: managed.ProvisionedSSHIdentity, Preset: managed.Preset, Endpoint: grpcAddr, MetricsURL: metricsURL, MetricsToken: metricsToken, Insecure: true, Telemetrygen: managed.TelemetrygenPath, Token: ingestToken, OutputDir: managed.OutputDir, FanoutVersion: actualVersion, FanoutArtifact: managed.FanoutArtifact, DataDir: dataDir, SampleInterval: managed.SampleInterval, GeneratorTimeout: 30 * time.Second, Cooldown: managed.Cooldown, Repeat: managed.Repeat, QueryURL: baseURL, QueryCookie: queryCookie, QueryRate: managed.QueryRate, SameHost: true, BatchSize: managed.BatchSize, TelemetrygenVersion: managed.TelemetrygenVersion, ProcessOverride: managed.ProcessOverride, WorkerOverride: managed.WorkerOverride, RateOverride: managed.RateOverride, DurationOverride: managed.DurationOverride}
 	runner := Runner{Config: cfg, Version: managed.HarnessVersion, Out: out, DeferSummary: true}
 	report, runErr := runner.Run(ctx)
 	stopFanout()
@@ -203,7 +191,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	verifyOutput, verifyErr := verify.CombinedOutput()
 	verifyDetail := "authoritative Parquet storage verified"
 	if verifyErr != nil {
-		verifyDetail = redact(strings.TrimSpace(string(verifyOutput)), ingestToken, setupToken)
+		verifyDetail = redact(strings.TrimSpace(string(verifyOutput)), ingestToken, setupToken, queryCookie, authSecret, metricsToken)
 		if verifyDetail == "" {
 			verifyDetail = verifyErr.Error()
 		}
@@ -216,7 +204,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	if err := os.MkdirAll(managed.OutputDir, 0o755); err != nil {
 		return err
 	}
-	repairEvidence := strings.TrimSpace(redact(string(verifyOutput), ingestToken, setupToken))
+	repairEvidence := strings.TrimSpace(redact(string(verifyOutput), ingestToken, setupToken, queryCookie, authSecret, metricsToken))
 	if repairEvidence == "" {
 		repairEvidence = verifyDetail
 	}
@@ -241,7 +229,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 func completeSetup(ctx context.Context, baseURL, setupToken string) (string, string, error) {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Timeout: 10 * time.Second, Jar: jar}
-	payload, _ := json.Marshal(map[string]string{"email": "benchmark@localhost", "name": "Fanout Benchmark", "setup_token": setupToken})
+	payload, _ := json.Marshal(map[string]string{"email": "benchmark@localhost", "display_name": "Fanout Benchmark", "setup_token": setupToken})
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/auth/setup", bytes.NewReader(payload))
@@ -265,7 +253,7 @@ func completeSetup(ctx context.Context, baseURL, setupToken string) (string, str
 					return "", "", err
 				}
 				if decoded.IngestToken == "" {
-					return "", "", errors.New("Fanout setup returned no ingest token")
+					return "", "", errors.New("Fanout setup response missing ingest_token")
 				}
 				parsed, _ := url.Parse(baseURL)
 				cookies := jar.Cookies(parsed)
@@ -273,10 +261,13 @@ func completeSetup(ctx context.Context, baseURL, setupToken string) (string, str
 				for _, cookie := range cookies {
 					pairs = append(pairs, cookie.Name+"="+cookie.Value)
 				}
+				if len(pairs) == 0 {
+					return "", "", errors.New("Fanout setup returned no session cookie")
+				}
 				return decoded.IngestToken, strings.Join(pairs, "; "), nil
 			}
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				return "", "", fmt.Errorf("Fanout setup status %d: %s", resp.StatusCode, body)
+				return "", "", fmt.Errorf("Fanout setup status %d", resp.StatusCode)
 			}
 		}
 		if time.Now().After(deadline) {
@@ -331,4 +322,25 @@ func copyEvidenceFile(source, destination string) error {
 		return copyErr
 	}
 	return closeErr
+}
+
+// Fanout rejects unknown FANOUT_ names. Isolate the managed product from the
+// caller's Fanout and benchmark settings, including any AI provider selection.
+// Reuse this exact environment for offline repair verification.
+func fanoutEnvironment(parent []string, dataDir, addr, authSecret, metricsToken string) []string {
+	env := make([]string, 0, len(parent)+7)
+	for _, entry := range parent {
+		if !strings.HasPrefix(entry, "FANOUT_") {
+			env = append(env, entry)
+		}
+	}
+	return append(env,
+		"FANOUT_ADDR="+addr,
+		"FANOUT_DATA_DIR="+dataDir,
+		"FANOUT_AUTH_CODE_SECRET="+authSecret,
+		"FANOUT_METRICS_TOKEN="+metricsToken,
+		"FANOUT_METRICS_PUBLIC=false",
+		"FANOUT_MCP_ENABLED=false",
+		"FANOUT_ALERTS_ENABLED=false",
+	)
 }

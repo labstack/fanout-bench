@@ -8,6 +8,10 @@ build:
     mkdir -p bin
     go build -trimpath -ldflags "-s -w -X main.version=$(git describe --always --dirty 2>/dev/null || echo dev)" -o bin/fanout-bench ./cmd/fanout-bench
 
+[positional-arguments]
+hetzner *args:
+    scripts/hetzner.sh "$@"
+
 telemetrygen:
     mkdir -p bin
     GOBIN="$(pwd)/bin" go install github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@{{telemetrygen_version}}

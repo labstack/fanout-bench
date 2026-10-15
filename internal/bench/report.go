@@ -146,7 +146,11 @@ func Markdown(r Report) string {
 	}
 	fmt.Fprintf(&b, "\n**Meaning:** accepted throughput is the delta of `fanout_ingest_rows_total` divided by the interval between the two counter scrapes that bracket the phase. It is not telemetrygen's requested or locally generated count.\n\n")
 	fmt.Fprintf(&b, "## Test identity\n\n| Setting | Value |\n|---|---|\n")
-	settings := [][2]string{{"Fanout version", display(r.Build.FanoutVersion)}, {"Fanout commit", display(r.Build.FanoutCommit)}, {"Fanout artifact", display(r.Build.FanoutArtifact)}, {"Harness", r.Build.HarnessVersion + " (`" + r.Build.HarnessCommit + "`)"}, {"telemetrygen", display(r.Build.TelemetrygenVersion)}, {"Machine", fmt.Sprintf("%s/%s · %s · %d logical CPUs · %s RAM", r.Host.OS, r.Host.Architecture, display(r.Host.CPUModel), r.Host.LogicalCPUs, formatBytes(float64(r.Host.MemoryBytes)))}, {"Generator placement", map[bool]string{true: "same host as Fanout", false: "separate/remote"}[r.Host.GeneratorLocal]}, {"Preset", r.Settings.Preset}, {"Transport", r.Settings.Transport}, {"Batch size", fmt.Sprintf("%d", r.Settings.BatchSize)}, {"Trace shape", "1 parent + 1 child span per telemetrygen trace tick"}, {"Repeat", fmt.Sprintf("%d", r.Settings.Repeat)}, {"Sample interval", fmt.Sprintf("%.1fs", r.Settings.SampleSeconds)}, {"Workload SHA-256", "`" + r.WorkloadSHA256 + "`"}}
+	machine := display(r.Host.CPUModel)
+	if r.Host.Description != "" {
+		machine += " · " + r.Host.Description
+	}
+	settings := [][2]string{{"Fanout version", display(r.Build.FanoutVersion)}, {"Fanout commit", display(r.Build.FanoutCommit)}, {"Fanout artifact", display(r.Build.FanoutArtifact)}, {"Harness", r.Build.HarnessVersion + " (`" + r.Build.HarnessCommit + "`)"}, {"telemetrygen", display(r.Build.TelemetrygenVersion)}, {"Machine", fmt.Sprintf("%s/%s · %s · %d logical CPUs · %s RAM", r.Host.OS, r.Host.Architecture, machine, r.Host.LogicalCPUs, formatBytes(float64(r.Host.MemoryBytes)))}, {"Generator placement", map[bool]string{true: "same host as Fanout", false: "separate/remote"}[r.Host.GeneratorLocal]}, {"Preset", r.Settings.Preset}, {"Transport", r.Settings.Transport}, {"Batch size", fmt.Sprintf("%d", r.Settings.BatchSize)}, {"Trace shape", "1 parent + 1 child span per telemetrygen trace tick"}, {"Repeat", fmt.Sprintf("%d", r.Settings.Repeat)}, {"Sample interval", fmt.Sprintf("%.1fs", r.Settings.SampleSeconds)}, {"Workload SHA-256", "`" + r.WorkloadSHA256 + "`"}}
 	for _, row := range settings {
 		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
 	}
@@ -159,7 +163,7 @@ func Markdown(r Report) string {
 		fmt.Fprintf(&b, "- %s **%s:** %s\n", map[bool]string{true: "✅", false: "❌"}[gate.Passed], gate.Name, gate.Detail)
 	}
 	if r.Settings.QueryRate > 0 {
-		fmt.Fprintf(&b, "\n## Read-under-write latency\n\nThe mixed phases used a bounded open-loop scheduler targeting %.0f authenticated dashboard queries/s across overview, topology, performance, trace, and logs endpoints.\n\n", r.Settings.QueryRate)
+		fmt.Fprintf(&b, "\n## Read-under-write latency\n\nThe mixed phases used a bounded open-loop scheduler targeting %.0f authenticated user operations/s across System overview dashboard refresh (batched panels and annotations), exemplar drill-down, and trace detail. Latency covers every request in an operation; operation kinds and their counts/latencies appear in the methodology.\n\n", r.Settings.QueryRate)
 		fmt.Fprintf(&b, "| Phase | Target/s | Completed/s | Attempted | p50 | p95 | p99 | Errors | Shed | Canceled at end |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 		for _, t := range r.Trials {
 			if t.Spec.Signal != Mixed || t.Spec.QueryRate <= 0 {
@@ -169,7 +173,7 @@ func Markdown(r Report) string {
 		}
 		fmt.Fprintln(&b)
 	}
-	fmt.Fprintf(&b, "\n## Methodology and limits\n\n")
+	fmt.Fprintf(&b, "\n## Methodology and limits\n\n%s\n\n", r.Settings.Methodology)
 	for _, warning := range r.Summary.Warnings {
 		fmt.Fprintf(&b, "- %s\n", warning)
 	}
@@ -178,8 +182,23 @@ func Markdown(r Report) string {
 }
 
 func reproductionCommand(c Config) string {
+	command := reproductionRunCommand(c)
+	if c.HostDescription != "" {
+		command += " --host-description " + shellQuote(c.HostDescription)
+	}
+	return command
+}
+
+func redactedHost(host string) string {
+	if user, _, ok := strings.Cut(host, "@"); ok {
+		return user + "@<host>"
+	}
+	return "<host>"
+}
+
+func reproductionRunCommand(c Config) string {
 	if c.Host != "" {
-		parts := []string{"fanout-bench run", "--host " + shellQuote(c.Host), "--fanout-version " + shellQuote(c.FanoutVersion), "--preset " + c.Preset, "--repeat " + fmt.Sprint(c.Repeat), "--telemetrygen-version " + shellQuote(c.TelemetrygenVersion), "--batch-size " + fmt.Sprint(c.BatchSize), "--sample-interval " + c.SampleInterval.String(), "--cooldown " + c.Cooldown.String()}
+		parts := []string{"fanout-bench run", "--host " + shellQuote(redactedHost(c.Host)), "--fanout-version " + shellQuote(c.FanoutVersion), "--preset " + c.Preset, "--repeat " + fmt.Sprint(c.Repeat), "--telemetrygen-version " + shellQuote(c.TelemetrygenVersion), "--batch-size " + fmt.Sprint(c.BatchSize), "--sample-interval " + c.SampleInterval.String(), "--cooldown " + c.Cooldown.String()}
 		if c.SSHPort != 0 && c.SSHPort != 22 {
 			parts = append(parts, "--ssh-port "+fmt.Sprint(c.SSHPort))
 		}

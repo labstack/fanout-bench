@@ -1,6 +1,8 @@
 package bench
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +11,7 @@ import (
 )
 
 func fixtureReport() Report {
-	return Report{SchemaVersion: SchemaVersion, RunID: "test", StartedAt: time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC), Build: Build{HarnessVersion: "v1", HarnessCommit: "abc", TelemetrygenVersion: "v0.157.0", FanoutVersion: "v2026.8.11"}, Host: Host{OS: "darwin", Architecture: "arm64", CPUModel: "M3 Max", LogicalCPUs: 14, MemoryBytes: 36 << 30, GeneratorLocal: true}, Settings: Settings{Preset: "quick", Transport: "plaintext gRPC", BatchSize: 1000, SampleSeconds: 1, Methodology: "accepted"}, WorkloadSHA256: strings.Repeat("a", 64), Trials: []Trial{{Spec: PhaseSpec{Name: "traces", Signal: Traces, Kind: "sweep", ProcessesPerSignal: 1, WorkersPerProcess: 2}, ElapsedSeconds: 5, OfferedPerSecond: 2000, AcceptedPerSecond: 1900, AcceptanceRatio: .95, Accepted: Counts{Spans: 9500}, Resources: Resources{AverageCPUCores: 1.2, PeakRSSBytes: 100 << 20}, Classification: "target-sustained"}}, Summary: Summary{PeakTraces: Peak{"traces", 2000, 1900, 1.2, 100 << 20}, Passed: true, Gates: []Gate{{"counters", true, "ok"}}, Warnings: []string{"synthetic"}}, ReproductionCommand: "FANOUT_BENCH_INGEST_TOKEN=… fanout-bench run"}
+	return Report{SchemaVersion: SchemaVersion, RunID: "test", StartedAt: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC), Build: Build{HarnessVersion: "v1", HarnessCommit: "abc", TelemetrygenVersion: "v0.157.0", FanoutVersion: "v2026.10.1-alpha"}, Host: Host{OS: "linux", Architecture: "amd64", CPUModel: "AMD EPYC", LogicalCPUs: 8, MemoryBytes: 32 << 30, GeneratorLocal: true}, Settings: Settings{Preset: "quick", Transport: "plaintext gRPC", BatchSize: 1000, SampleSeconds: 1, Methodology: "accepted"}, WorkloadSHA256: strings.Repeat("a", 64), Trials: []Trial{{Spec: PhaseSpec{Name: "traces", Signal: Traces, Kind: "sweep", ProcessesPerSignal: 1, WorkersPerProcess: 2}, ElapsedSeconds: 5, OfferedPerSecond: 2000, AcceptedPerSecond: 1900, AcceptanceRatio: .95, Accepted: Counts{Spans: 9500}, Resources: Resources{AverageCPUCores: 1.2, PeakRSSBytes: 100 << 20}, Classification: "target-sustained"}}, Summary: Summary{PeakTraces: Peak{"traces", 2000, 1900, 1.2, 100 << 20}, Passed: true, Gates: []Gate{{"counters", true, "ok"}}, Warnings: []string{"synthetic"}}, ReproductionCommand: "FANOUT_BENCH_INGEST_TOKEN=… fanout-bench run"}
 }
 
 func TestArtifactsAreCompleteAndContainNoSecrets(t *testing.T) {
@@ -51,15 +53,15 @@ func TestMarkdownExplainsAcceptedRowsAndLimits(t *testing.T) {
 }
 
 func TestReproductionCommandPutsSecretEnvironmentFirst(t *testing.T) {
-	got := reproductionCommand(Config{Preset: "quick", Endpoint: "localhost:4317", MetricsURL: "http://localhost", FanoutVersion: "x", Repeat: 1, QueryURL: "http://localhost", QueryRate: 5})
+	got := reproductionCommand(Config{Preset: "quick", Endpoint: "localhost:7520", MetricsURL: "http://localhost", FanoutVersion: "x", Repeat: 1, QueryURL: "http://localhost", QueryRate: 5})
 	if !strings.HasPrefix(got, "FANOUT_BENCH_INGEST_TOKEN=… FANOUT_BENCH_QUERY_COOKIE=… fanout-bench run") {
 		t.Fatalf("bad command: %s", got)
 	}
 }
 
 func TestRemoteReproductionCommandIncludesSSHConnection(t *testing.T) {
-	got := reproductionCommand(Config{Host: "root@bench", SSHPort: 2222, SSHIdentity: "/keys/bench key", Preset: "quick", FanoutVersion: "v1", TelemetrygenVersion: "v2", Repeat: 1, BatchSize: 1000, SampleInterval: time.Second, Cooldown: time.Second})
-	for _, want := range []string{"--host 'root@bench'", "--ssh-port 2222", "--ssh-identity '/keys/bench key'"} {
+	got := reproductionCommand(Config{Host: "root@192.0.2.10", SSHKnownHosts: "/tmp/run/known_hosts", SSHPort: 2222, SSHIdentity: "/keys/bench key", Preset: "quick", FanoutVersion: "v2026.10.1-alpha", TelemetrygenVersion: "v0.157.0", Repeat: 1, BatchSize: 1000, SampleInterval: time.Second, Cooldown: time.Second})
+	for _, want := range []string{"--host 'root@<host>'", "--ssh-port 2222", "--ssh-identity '/keys/bench key'"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("command missing %q: %s", want, got)
 		}
@@ -90,5 +92,71 @@ func TestRenderedRatesSurviveZeroElapsedTrial(t *testing.T) {
 		if strings.Contains(text, "Inf") || strings.Contains(text, "NaN") {
 			t.Fatalf("%s output contains a non-finite rate", name)
 		}
+	}
+}
+
+func TestReproductionCommandRedactsAddress(t *testing.T) {
+	for _, target := range []struct{ host, redacted string }{
+		{"root@192.0.2.10", "root@<host>"},
+		{"benchmark@example.test", "benchmark@<host>"},
+		{"192.0.2.10", "<host>"},
+		{"root@[2001:db8::1]", "root@<host>"},
+	} {
+		t.Run(target.host, func(t *testing.T) {
+			report := fixtureReport()
+			report.ReproductionCommand = reproductionCommand(Config{Host: target.host, SSHKnownHosts: "/tmp/run/known_hosts"})
+			data, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), target.host) || strings.Contains(string(data), "ssh-known-hosts") || strings.Contains(string(data), "/tmp/run/known_hosts") {
+				t.Fatalf("report retained address or run-scoped known-hosts: %s", data)
+			}
+			if !strings.Contains(report.ReproductionCommand, "--host "+shellQuote(target.redacted)) {
+				t.Fatalf("missing redacted host: %s", report.ReproductionCommand)
+			}
+		})
+	}
+}
+
+func TestHostDescriptionRecordedAndRendered(t *testing.T) {
+	// Cancel before load: report initialization must still preserve host identity.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	description := "Hetzner Cloud ccx33, fsn1, ubuntu-24.04"
+	generator := filepath.Join(t.TempDir(), "telemetrygen")
+	if err := os.WriteFile(generator, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := Runner{Config: Config{Host: "root@192.0.2.10", HostDescription: description, Telemetrygen: generator, Token: "test-token", Endpoint: "localhost:7520", MetricsURL: "http://localhost:7520/metrics", Preset: "quick", Repeat: 1, BatchSize: 1000, SampleInterval: time.Second, GeneratorTimeout: time.Second}}
+	report, err := runner.Run(ctx)
+	if err == nil || report == nil {
+		t.Fatalf("expected partial report on cancellation, got report=%v err=%v", report, err)
+	}
+	dir := t.TempDir()
+	if err := WriteArtifacts(dir, *report); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Host struct {
+			Description string `json:"description"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(data, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded.Host.Description != description {
+		t.Fatalf("recorded description=%q", recorded.Host.Description)
+	}
+	markdown, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(markdown), display(report.Host.CPUModel)+" · "+description) {
+		t.Fatal("host description missing beside CPU model")
 	}
 }

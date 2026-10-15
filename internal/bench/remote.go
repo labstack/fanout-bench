@@ -20,6 +20,7 @@ import (
 )
 
 var sshTargetPattern = regexp.MustCompile(`^(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\])$`)
+var fanoutVersionPattern = regexp.MustCompile(`^v[0-9]{4}\.(?:[1-9]|1[0-2])\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta|rc))?$`)
 
 func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) error {
 	if !sshTargetPattern.MatchString(cfg.Host) || strings.HasPrefix(cfg.Host, "-") {
@@ -30,6 +31,9 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 	}
 	if cfg.FanoutVersion == "" || cfg.FanoutVersion == "unknown" {
 		return errors.New("--fanout-version is required for a remote run")
+	}
+	if !fanoutVersionPattern.MatchString(cfg.FanoutVersion) {
+		return fmt.Errorf("invalid Fanout release %q: want vYYYY.M.N[-alpha|-beta|-rc]", cfg.FanoutVersion)
 	}
 	if _, err := Plan(cfg); err != nil {
 		return err
@@ -221,8 +225,11 @@ func moduleRoot() (string, error) {
 }
 
 func fetchFanout(ctx context.Context, dir, version, goos, goarch string) (string, string, error) {
+	asset, err := fanoutAsset(version, goos, goarch)
+	if err != nil {
+		return "", "", err
+	}
 	base := "https://github.com/labstack/fanout/releases/download/" + version + "/"
-	asset := "fanout_" + version + "_" + goos + "_" + goarch + ".tar.gz"
 	sumsURL := base + "SHA256SUMS"
 	assetURL := base + asset
 	sums, err := downloadSmall(ctx, sumsURL, 1<<20)
@@ -279,6 +286,16 @@ func fetchFanout(ctx context.Context, dir, version, goos, goarch string) (string
 		return "", "", err
 	}
 	return binaryPath, assetURL + "#sha256=" + got, nil
+}
+
+func fanoutAsset(version, goos, goarch string) (string, error) {
+	if !fanoutVersionPattern.MatchString(version) {
+		return "", fmt.Errorf("invalid Fanout release %q", version)
+	}
+	if goos != "linux" || (goarch != "amd64" && goarch != "arm64") {
+		return "", fmt.Errorf("unsupported Fanout platform %s/%s", goos, goarch)
+	}
+	return "fanout_" + version + "_" + goos + "_" + goarch + ".tar.gz", nil
 }
 
 func downloadSmall(ctx context.Context, url string, limit int64) ([]byte, error) {
@@ -340,7 +357,7 @@ func extractBinary(archivePath, destination, name string) error {
 func managedRemoteCommand(stage string, cfg Config, version, artifact string) string {
 	args := []string{stage + "/fanout-bench", "managed", "--fanout", stage + "/fanout", "--telemetrygen", stage + "/telemetrygen", "--output", stage + "/results", "--fanout-version", cfg.FanoutVersion, "--fanout-artifact", artifact, "--preset", cfg.Preset, "--repeat", fmt.Sprint(cfg.Repeat), "--batch-size", fmt.Sprint(cfg.BatchSize), "--query-rate", fmt.Sprint(cfg.QueryRate), "--sample-interval", cfg.SampleInterval.String(), "--cooldown", cfg.Cooldown.String(), "--harness-version", version}
 	args = append(args, "--telemetrygen-version", cfg.TelemetrygenVersion)
-	args = append(args, "--provisioned-host", cfg.Host)
+	args = append(args, "--provisioned-host", redactedHost(cfg.Host), "--host-description", cfg.HostDescription)
 	args = append(args, "--provisioned-ssh-port", fmt.Sprint(cfg.SSHPort), "--provisioned-ssh-identity", cfg.SSHIdentity)
 	args = append(args, "--processes", fmt.Sprint(cfg.ProcessOverride), "--workers", fmt.Sprint(cfg.WorkerOverride), "--rate", fmt.Sprint(cfg.RateOverride), "--duration", cfg.DurationOverride.String())
 	quoted := make([]string, len(args))
@@ -355,12 +372,18 @@ func sshArgs(cfg Config) []string {
 	if cfg.SSHIdentity != "" {
 		args = append(args, "-i", cfg.SSHIdentity)
 	}
+	if cfg.SSHKnownHosts != "" {
+		args = append(args, "-o", "UserKnownHostsFile="+cfg.SSHKnownHosts)
+	}
 	return args
 }
 func scpArgs(cfg Config) []string {
 	args := []string{"-q", "-P", fmt.Sprint(cfg.SSHPort)}
 	if cfg.SSHIdentity != "" {
 		args = append(args, "-i", cfg.SSHIdentity)
+	}
+	if cfg.SSHKnownHosts != "" {
+		args = append(args, "-o", "UserKnownHostsFile="+cfg.SSHKnownHosts)
 	}
 	return args
 }
