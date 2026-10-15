@@ -1,8 +1,10 @@
 package bench
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -13,33 +15,35 @@ import (
 	"time"
 )
 
-var queryTargets = []string{
-	"/api/observability/overview?window=15m&limit=100",
-	"/api/observability/topology?window=1h&limit=100",
-	"/api/observability/performance?window=6h&limit=100",
-	"/api/observability/trace?window=12h&limit=100",
-	"/api/observability/logs?window=24h&limit=100",
-}
-
-// maxQueryBody bounds a single dashboard response. A response larger than this
-// is still a success: the server answered, and only the JSON well-formedness
-// check is skipped because the tail was never read.
+// maxQueryBody bounds a single response. Oversized responses fail because
+// their panel errors and discovered trace contents cannot be validated.
 const maxQueryBody = 32 << 20
 
 type queryRun struct {
-	wg       sync.WaitGroup
-	hist     *histogram
-	failures int64
-	attempts int64
-	shed     int64
-	canceled int64
-	stop     chan struct{}
-	stopOnce sync.Once
-	cancel   context.CancelFunc
+	targets    []queryTarget
+	traceMu    sync.Mutex
+	traces     map[string]traceReference
+	selections map[string]drillSelection
+	kindsMu    sync.Mutex
+	kinds      map[string]*operationStats
+	wg         sync.WaitGroup
+	hist       *histogram
+	failures   int64
+	attempts   int64
+	shed       int64
+	canceled   int64
+	stop       chan struct{}
+	stopOnce   sync.Once
+	cancel     context.CancelFunc
+}
+
+type operationStats struct {
+	dispatched, failures, canceled int64
+	hist                           *histogram
 }
 
 func newQueryRun() *queryRun {
-	return &queryRun{hist: newHistogram(), stop: make(chan struct{}), cancel: func() {}}
+	return &queryRun{targets: []queryTarget{{name: "dashboard-refresh", body: []byte(`{}`)}}, traces: map[string]traceReference{}, selections: map[string]drillSelection{}, kinds: map[string]*operationStats{}, hist: newHistogram(), stop: make(chan struct{}), cancel: func() {}}
 }
 
 func (q *queryRun) start(ctx context.Context, client *http.Client, base, cookie string, rate float64) {
@@ -106,39 +110,122 @@ func (q *queryRun) finish() {
 }
 
 func (q *queryRun) request(ctx context.Context, client *http.Client, base, cookie string, targetIndex int) {
-	target := strings.TrimRight(base, "/") + queryTargets[targetIndex%len(queryTargets)]
+	query := q.targets[targetIndex%len(q.targets)]
+	kind := query.name
 	started := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		atomic.AddInt64(&q.failures, 1)
+	success := false
+	defer func() {
+		elapsed := time.Since(started)
+		q.kindsMu.Lock()
+		defer q.kindsMu.Unlock()
+		stats := q.kinds[kind]
+		if stats == nil {
+			stats = &operationStats{hist: newHistogram()}
+			q.kinds[kind] = stats
+		}
+		stats.dispatched++
+		if success {
+			q.hist.record(elapsed)
+			stats.hist.record(elapsed)
+		} else if ctx.Err() != nil {
+			atomic.AddInt64(&q.canceled, 1)
+			stats.canceled++
+		} else {
+			atomic.AddInt64(&q.failures, 1)
+			stats.failures++
+		}
+	}()
+	refresh := func() bool {
+		body, ok := queryHTTP(ctx, client, base, cookie, http.MethodPost, "/api/panels/query", query.body)
+		if !ok {
+			return false
+		}
+		annotations, valid := q.panelResponse(body, query)
+		// refresh.ts requests annotations after the panel batch, even if a
+		// panel reports an error. Count the whole operation as failed either way.
+		if annotations != nil {
+			_, ok = queryHTTP(ctx, client, base, cookie, http.MethodPost, "/api/annotations", annotations)
+		}
+		return valid && ok
+	}
+	if kind == "dashboard-refresh" {
+		success = refresh()
 		return
+	}
+	q.traceMu.Lock()
+	trace := q.traces[query.window]
+	q.traceMu.Unlock()
+	if kind == "trace-detail" && trace.id != "" {
+		body, ok := queryHTTP(ctx, client, base, cookie, http.MethodGet, traceDetailPath(trace), nil)
+		success = ok && traceDetailResponse(body)
+		return
+	}
+	// Without a trace reference, this slot performs the UI exemplar selection
+	// operation. Report its actual kind instead of a successful detail read.
+	kind = "drill-" + query.kind
+	q.traceMu.Lock()
+	selection, found := q.selections[query.window+"/"+query.panelID]
+	q.traceMu.Unlock()
+	if !found {
+		// A click needs a previously loaded panel. Use this slot for a refresh;
+		// the next slot can select its result, keeping one user operation per tick.
+		kind = "dashboard-refresh"
+		success = refresh()
+		return
+	}
+	body, ok := queryHTTP(ctx, client, base, cookie, http.MethodPost, "/api/panels/exemplars", exemplarBody(query, selection))
+	success = ok && q.exemplarResponse(body, query, selection)
+}
+
+func queryHTTP(ctx context.Context, client *http.Client, base, cookie, method, path string, body []byte) ([]byte, bool) {
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, false
 	}
 	req.Header.Set("Cookie", cookie)
+	req.Header.Set("Fanout-Request", "1")
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			atomic.AddInt64(&q.canceled, 1)
-		} else {
-			atomic.AddInt64(&q.failures, 1)
-		}
-		return
+		return nil, false
 	}
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxQueryBody+1))
-	resp.Body.Close()
-	if readErr != nil {
-		if ctx.Err() != nil {
-			atomic.AddInt64(&q.canceled, 1)
-		} else {
-			atomic.AddInt64(&q.failures, 1)
-		}
-		return
+	defer resp.Body.Close()
+	response, err := io.ReadAll(io.LimitReader(resp.Body, maxQueryBody+1))
+	return response, err == nil && resp.StatusCode == http.StatusOK && len(response) <= maxQueryBody && json.Valid(response)
+}
+
+func (q *queryRun) completedByKind() map[string]int64 {
+	q.kindsMu.Lock()
+	defer q.kindsMu.Unlock()
+	completed := make(map[string]int64, len(q.kinds))
+	for kind, stats := range q.kinds {
+		completed[kind] = stats.hist.snapshot().Count
 	}
-	truncated := len(body) > maxQueryBody
-	if resp.StatusCode != http.StatusOK || (!truncated && !json.Valid(body)) {
-		atomic.AddInt64(&q.failures, 1)
-		return
+	return completed
+}
+
+// Keep per-operation latency evidence inside the methodology string.
+func (q *queryRun) operationSummary(phase string) string {
+	q.kindsMu.Lock()
+	defer q.kindsMu.Unlock()
+	if len(q.kinds) == 0 {
+		return ""
 	}
-	q.hist.record(time.Since(started))
+	var names []string
+	for name := range q.kinds {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nRead operations for %s (fallback slots are attributed to the operation performed):\n\n| Kind | Dispatched | Completed | Failures | Canceled | p95 | p99 |\n|---|---:|---:|---:|---:|---:|---:|\n", phase)
+	for _, name := range names {
+		stats := q.kinds[name]
+		latency := stats.hist.snapshot()
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %.1fms | %.1fms |\n", name, stats.dispatched, latency.Count, stats.failures, stats.canceled, latency.P95Ms, latency.P99Ms)
+	}
+	return b.String()
 }
 
 type histogram struct {

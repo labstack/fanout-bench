@@ -8,7 +8,7 @@ import (
 )
 
 func TestGeneratorArgsMatchPinnedTelemetrygenCLI(t *testing.T) {
-	cfg := Config{Endpoint: "localhost:4317", Token: "token with space", GeneratorTimeout: 30, Insecure: true}
+	cfg := Config{Endpoint: "localhost:7520", Token: "token with space", GeneratorTimeout: 30, Insecure: true}
 	spec := PhaseSpec{Duration: 5, RatePerWorker: 2500, WorkersPerProcess: 8, BatchSize: 1000}
 	args := generatorArgs(cfg, Traces, spec)
 	for _, want := range []string{"--otlp-header", "Authorization=\"Bearer token with space\"", "--child-spans", "1", "--otlp-insecure"} {

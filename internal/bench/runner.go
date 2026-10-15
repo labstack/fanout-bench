@@ -27,6 +27,8 @@ type Runner struct {
 	Out          io.Writer
 	DeferSummary bool
 	client       *http.Client
+	queryTargets []queryTarget
+	readSummary  string
 }
 
 func (r *Runner) Run(ctx context.Context) (*Report, error) {
@@ -47,6 +49,13 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	var readMethod string
+	if r.Config.QueryRate > 0 {
+		r.queryTargets, readMethod, err = loadQueryTargets(ctx, r.client, r.Config.QueryURL, r.Config.QueryCookie)
+		if err != nil {
+			return nil, fmt.Errorf("read workload: %s", redact(err.Error(), r.Config.Token, r.Config.QueryCookie, r.Config.MetricsToken))
+		}
+	}
 	started := time.Now().UTC()
 	report := &Report{
 		SchemaVersion: SchemaVersion,
@@ -56,6 +65,8 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		Host:          detectHost(r.Config.SameHost),
 		Settings:      settingsFrom(r.Config),
 	}
+	report.Host.Description = r.Config.HostDescription
+	report.Settings.Methodology += readMethod
 	report.WorkloadSHA256 = workloadHash(report.Settings, plan)
 	report.ReproductionCommand = reproductionCommand(r.Config)
 	printRunHeader(r.Out, report, plan)
@@ -79,6 +90,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 			return r.abandon(report, fmt.Errorf("phase %s: %w", spec.Name, err))
 		}
 		report.Trials = append(report.Trials, trial)
+		report.Settings.Methodology += r.readSummary
 		printTrialLine(r.Out, trial)
 	}
 
@@ -110,7 +122,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 func (r *Runner) abandon(report *Report, cause error) (*Report, error) {
 	report.FinishedAt = time.Now().UTC()
 	report.Summary = summarize(*report, report.Summary.CooldownRSS, report.Summary.CooldownHeap)
-	report.Summary.Gates = append(report.Summary.Gates, Gate{"run-completed", false, redact(cause.Error(), r.Config.Token, r.Config.QueryCookie)})
+	report.Summary.Gates = append(report.Summary.Gates, Gate{"run-completed", false, redact(cause.Error(), r.Config.Token, r.Config.QueryCookie, r.Config.MetricsToken)})
 	report.Summary.Passed = false
 	report.Summary.Warnings = append(report.Summary.Warnings, "This run ended before the suite finished. The phases recorded here are partial evidence and must not be published as a result.")
 	return report, cause
@@ -134,7 +146,7 @@ func (r *Runner) validate() error {
 	case cfg.QueryRate < 0:
 		return errors.New("query rate cannot be negative")
 	case cfg.QueryRate > 10_000:
-		return errors.New("query rate cannot exceed 10000 requests/s")
+		return errors.New("query rate cannot exceed 10000 operations/s")
 	case cfg.QueryRate > 0 && strings.TrimSpace(cfg.QueryURL) == "":
 		return errors.New("query URL is required when query rate is positive")
 	case cfg.QueryRate > 0 && strings.TrimSpace(cfg.QueryCookie) == "":
@@ -163,6 +175,7 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 	go r.sample(phaseCtx, started, samplesDone)
 	queries := newQueryRun()
 	if spec.QueryRate > 0 {
+		queries.targets = r.queryTargets
 		// Queries run under the parent context, not the phase context, so that
 		// finish() can drain in-flight requests instead of cancelling them.
 		queries.start(ctx, r.client, r.Config.QueryURL, r.Config.QueryCookie, spec.QueryRate)
@@ -213,15 +226,17 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec) (Trial, error) {
 		RowsDropped: dropped, GeneratorProcesses: processCount, GeneratorFailures: failures,
 		ProcessRestarted: restarted, Resources: resources,
 		QueryLatency: queries.hist.snapshot(), QueryAttempts: queries.attempts, QueryFailures: queries.failures,
-		QueryShed: queries.shed, QueryCanceled: queries.canceled,
+		QueryKindCompleted: queries.completedByKind(),
+		QueryShed:          queries.shed, QueryCanceled: queries.canceled,
 		Samples: samples,
 	}
 	trial.Classification, trial.ClassificationNotes = classify(trial)
+	r.readSummary = queries.operationSummary(spec.Name)
 	if trial.Spec.QueryRate > 0 && !queryTargetMet(trial) {
 		trial.ClassificationNotes = append(trial.ClassificationNotes, "the requested query rate was not sustained")
 	}
 	if runErr != nil {
-		trial.ClassificationNotes = append(trial.ClassificationNotes, redact(runErr.Error(), r.Config.Token, r.Config.QueryCookie))
+		trial.ClassificationNotes = append(trial.ClassificationNotes, redact(runErr.Error(), r.Config.Token, r.Config.QueryCookie, r.Config.MetricsToken))
 	}
 	return trial, nil
 }
@@ -266,7 +281,7 @@ func (r *Runner) runGenerator(ctx context.Context, signal Signal, spec PhaseSpec
 	output := &boundedBuffer{limit: 16 << 10}
 	cmd.Stdout, cmd.Stderr = output, output
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("telemetrygen %s: %w: %s", signal, err, redact(output.String(), r.Config.Token, r.Config.QueryCookie))
+		return fmt.Errorf("telemetrygen %s: %w: %s", signal, err, redact(output.String(), r.Config.Token, r.Config.QueryCookie, r.Config.MetricsToken))
 	}
 	return nil
 }
@@ -414,8 +429,21 @@ func queryTargetMet(t Trial) bool {
 	if t.ElapsedSeconds <= 0 {
 		return false
 	}
+	if t.Spec.Kind == "sustained" && len(missingQueryKinds(t)) > 0 {
+		return false
+	}
 	completedRate := perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds)
 	return completedRate >= t.Spec.QueryRate*.95 && t.QueryFailures == 0 && t.QueryShed == 0
+}
+
+func missingQueryKinds(t Trial) []string {
+	var missing []string
+	for _, kind := range []string{"dashboard-refresh", "drill-traces", "trace-detail"} {
+		if t.QueryKindCompleted[kind] == 0 {
+			missing = append(missing, kind)
+		}
+	}
+	return missing
 }
 
 func summarize(report Report, cooldownRSS, cooldownHeap float64) Summary {
@@ -475,6 +503,9 @@ func summarize(report Report, cooldownRSS, cooldownHeap float64) Summary {
 			queryOK = queryTargetMet(t)
 			completedRate := perSecond(float64(t.QueryLatency.Count), t.ElapsedSeconds)
 			detail = fmt.Sprintf("%.1f/%.1f completed/s, %d errors, %d shed", completedRate, t.Spec.QueryRate, t.QueryFailures, t.QueryShed)
+			if missing := missingQueryKinds(t); len(missing) > 0 {
+				detail += "; zero successful operations: " + strings.Join(missing, ", ")
+			}
 			break
 		}
 		s.Gates = append(s.Gates, Gate{"sustained-query-load", queryOK, detail})
@@ -509,6 +540,9 @@ func settingsFrom(c Config) Settings {
 }
 
 func workloadHash(settings Settings, plan []PhaseSpec) string {
+	// Per-operation latency results share the methodology field; only its
+	// workload definition belongs in the workload identity.
+	settings.Methodology, _, _ = strings.Cut(settings.Methodology, "\n\nRead operations for ")
 	payload, _ := json.Marshal(struct {
 		Settings Settings
 		Plan     []PhaseSpec

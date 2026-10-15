@@ -2,16 +2,73 @@ package bench
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+type releaseTransport func(*http.Request) (*http.Response, error)
+
+func (f releaseTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestFetchMaturityReleaseVerifiesNamedAsset(t *testing.T) {
+	var archive bytes.Buffer
+	gz := gzip.NewWriter(&archive)
+	tarball := tar.NewWriter(gz)
+	if err := tarball.WriteHeader(&tar.Header{Name: "./fanout", Typeflag: tar.TypeReg, Mode: 0o755, Size: 6}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarball.Write([]byte("binary")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarball.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(archive.Bytes()))
+	const base = "https://github.com/labstack/fanout/releases/download/v2026.10.1-alpha/"
+	const asset = "fanout_v2026.10.1-alpha_linux_amd64.tar.gz"
+	requests := 0
+	previous := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = previous })
+	http.DefaultClient = &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {
+		requests++
+		var body []byte
+		switch r.URL.String() {
+		case base + "SHA256SUMS":
+			body = []byte(digest + "  " + asset + "\n")
+		case base + asset:
+			body = archive.Bytes()
+		default:
+			return nil, fmt.Errorf("unexpected release request %s", r.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	path, identity, err := fetchFanout(context.Background(), t.TempDir(), "v2026.10.1-alpha", "linux", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "binary" || requests != 2 || identity != base+asset+"#sha256="+digest {
+		t.Fatalf("data=%q requests=%d identity=%s", data, requests, identity)
+	}
+}
 
 func TestSSHTargetValidation(t *testing.T) {
 	valid := []string{"root@example.com", "bench-host", "ubuntu@10.0.0.4", "root@[2001:db8::1]"}
@@ -24,6 +81,23 @@ func TestSSHTargetValidation(t *testing.T) {
 	for _, target := range invalid {
 		if sshTargetPattern.MatchString(target) {
 			t.Errorf("unsafe target accepted: %q", target)
+		}
+	}
+}
+
+func TestFanoutReleaseVersionsAndAssets(t *testing.T) {
+	for _, version := range []string{"v2026.10.1-alpha", "v2026.10.2-beta", "v2026.10.3-rc", "v2026.10.4", "v2026.1.0"} {
+		got, err := fanoutAsset(version, "linux", "amd64")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "fanout_" + version + "_linux_amd64.tar.gz"; got != want {
+			t.Errorf("asset=%q want %q", got, want)
+		}
+	}
+	for _, version := range []string{"2026.10.1", "v2026.0.1", "v2026.13.1", "v2026.01.1", "v2026.10.01", "v2026.10.1-alpha.1", "v2026.10.1-preview", "v2026.10.1/evil", "v2026.10.1-rc;bad", ""} {
+		if _, err := fanoutAsset(version, "linux", "amd64"); err == nil {
+			t.Errorf("accepted invalid release %q", version)
 		}
 	}
 }
@@ -47,12 +121,15 @@ func TestGoInstallOutputUsesCrossCompileDirectory(t *testing.T) {
 }
 
 func TestManagedRemoteCommandQuotesEveryValue(t *testing.T) {
-	cfg := Config{Host: "root@host", SSHPort: 2222, SSHIdentity: "/keys/bench key", FanoutVersion: "v2026.8.11", Preset: "quick", Repeat: 1, BatchSize: 1000, TelemetrygenVersion: "v0.157.0"}
+	cfg := Config{Host: "root@192.0.2.10", HostDescription: "Hetzner Cloud ccx33, fsn1, ubuntu-24.04", SSHPort: 2222, SSHIdentity: "/keys/bench key", FanoutVersion: "v2026.10.1-alpha", Preset: "quick", Repeat: 1, BatchSize: 1000, TelemetrygenVersion: "v0.157.0"}
 	got := managedRemoteCommand("/tmp/fanout-bench-safe", cfg, "dev", "asset#sha256=abc")
-	for _, want := range []string{"'managed'", "'--fanout-version'", "'v2026.8.11'", "'--provisioned-host'", "'root@host'", "'--provisioned-ssh-port'", "'2222'", "'--provisioned-ssh-identity'", "'/keys/bench key'"} {
+	for _, want := range []string{"'managed'", "'--fanout-version'", "'v2026.10.1-alpha'", "'--provisioned-host'", "'root@<host>'", "'--host-description'", "'Hetzner Cloud ccx33, fsn1, ubuntu-24.04'", "'--provisioned-ssh-port'", "'2222'", "'--provisioned-ssh-identity'", "'/keys/bench key'"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("command missing %s: %s", want, got)
 		}
+	}
+	if strings.Contains(got, "192.0.2.10") {
+		t.Fatal("remote agent does not need the SSH address")
 	}
 	if strings.Contains(got, "Bearer") {
 		t.Fatal("remote command must not carry credentials")
@@ -156,5 +233,28 @@ func TestCopyEvidenceFileOverwritesPreviousRun(t *testing.T) {
 	}
 	if string(got) != "second run\n" {
 		t.Fatalf("destination=%q", got)
+	}
+}
+
+func TestKnownHostsReachesSSHAndSCPArgs(t *testing.T) {
+	for name, build := range map[string]func(Config) []string{"ssh": sshArgs, "scp": scpArgs} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{SSHPort: 2222, SSHIdentity: "/keys/benchmark key", SSHKnownHosts: "/tmp/run scope/known_hosts"}
+			args := build(cfg)
+			for _, pair := range [][]string{{"-o", "UserKnownHostsFile=" + cfg.SSHKnownHosts}, {"-i", cfg.SSHIdentity}} {
+				index := slices.Index(args, pair[0])
+				if pair[0] == "-o" {
+					index = slices.Index(args, pair[1]) - 1
+				}
+				if index < 0 || index+1 >= len(args) || args[index] != pair[0] || args[index+1] != pair[1] {
+					t.Fatalf("missing option pair %q in %q", pair, args)
+				}
+			}
+			for _, arg := range build(Config{SSHPort: 22}) {
+				if strings.HasPrefix(arg, "UserKnownHostsFile=") {
+					t.Fatal("default known-hosts behavior changed")
+				}
+			}
+		})
 	}
 }
