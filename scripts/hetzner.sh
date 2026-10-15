@@ -111,7 +111,7 @@ generator_attempted=false
 # Deletion can race an interrupted create. Confirm absence rather than treating
 # a missing resource as a cleanup failure; retry API and transient state errors.
 # Invoked indirectly by the EXIT trap's cleanup function.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 delete_resource() {
     local kind=$1 resource=$2 attempt names check absent
     for attempt in 1 2 3; do
@@ -141,7 +141,7 @@ delete_resource() {
     return 1
 }
 # Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     local status=$?
     trap - EXIT
@@ -163,7 +163,7 @@ benchmark_pid=
 create_in_flight=false
 interrupted_status=
 # Invoked indirectly by the signal traps.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 interrupt() {
     trap '' INT TERM
     if [[ $create_in_flight == true ]]; then
