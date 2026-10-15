@@ -150,7 +150,7 @@ func Markdown(r Report) string {
 	if r.Host.Description != "" {
 		machine += " · " + r.Host.Description
 	}
-	settings := [][2]string{{"Fanout version", display(r.Build.FanoutVersion)}, {"Fanout commit", display(r.Build.FanoutCommit)}, {"Fanout artifact", display(r.Build.FanoutArtifact)}, {"Harness", r.Build.HarnessVersion + " (`" + r.Build.HarnessCommit + "`)"}, {"telemetrygen", display(r.Build.TelemetrygenVersion)}, {"Machine", fmt.Sprintf("%s/%s · %s · %d logical CPUs · %s RAM", r.Host.OS, r.Host.Architecture, machine, r.Host.LogicalCPUs, formatBytes(float64(r.Host.MemoryBytes)))}, {"Generator placement", map[bool]string{true: "same host as Fanout", false: "separate/remote"}[r.Host.GeneratorLocal]}, {"Preset", r.Settings.Preset}, {"Transport", r.Settings.Transport}, {"Batch size", fmt.Sprintf("%d", r.Settings.BatchSize)}, {"Trace shape", "1 parent + 1 child span per telemetrygen trace tick"}, {"Repeat", fmt.Sprintf("%d", r.Settings.Repeat)}, {"Sample interval", fmt.Sprintf("%.1fs", r.Settings.SampleSeconds)}, {"Workload SHA-256", "`" + r.WorkloadSHA256 + "`"}}
+	settings := [][2]string{{"Fanout version", display(r.Build.FanoutVersion)}, {"Fanout commit", display(r.Build.FanoutCommit)}, {"Fanout artifact", display(r.Build.FanoutArtifact)}, {"Harness", r.Build.HarnessVersion + " (`" + r.Build.HarnessCommit + "`)"}, {"telemetrygen", display(r.Build.TelemetrygenVersion)}, {"Machine", fmt.Sprintf("%s/%s · %s · %d logical CPUs · %s RAM", r.Host.OS, r.Host.Architecture, machine, r.Host.LogicalCPUs, formatBytes(float64(r.Host.MemoryBytes)))}, {"Generator host", display(r.Host.GeneratorDescription)}, {"Generator placement", map[bool]string{true: "same host as Fanout", false: "separate/remote"}[r.Host.GeneratorLocal]}, {"Preset", r.Settings.Preset}, {"Transport", r.Settings.Transport}, {"Batch size", fmt.Sprintf("%d", r.Settings.BatchSize)}, {"Trace shape", "1 parent + 1 child span per telemetrygen trace tick"}, {"Repeat", fmt.Sprintf("%d", r.Settings.Repeat)}, {"Sample interval", fmt.Sprintf("%.1fs", r.Settings.SampleSeconds)}, {"Workload SHA-256", "`" + r.WorkloadSHA256 + "`"}}
 	for _, row := range settings {
 		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
 	}
@@ -186,6 +186,9 @@ func reproductionCommand(c Config) string {
 	if c.HostDescription != "" {
 		command += " --host-description " + shellQuote(c.HostDescription)
 	}
+	if c.GeneratorHostDescription != "" {
+		command += " --generator-host-description " + shellQuote(c.GeneratorHostDescription)
+	}
 	return command
 }
 
@@ -199,6 +202,9 @@ func redactedHost(host string) string {
 func reproductionRunCommand(c Config) string {
 	if c.Host != "" {
 		parts := []string{"fanout-bench run", "--host " + shellQuote(redactedHost(c.Host)), "--fanout-version " + shellQuote(c.FanoutVersion), "--preset " + c.Preset, "--repeat " + fmt.Sprint(c.Repeat), "--telemetrygen-version " + shellQuote(c.TelemetrygenVersion), "--batch-size " + fmt.Sprint(c.BatchSize), "--sample-interval " + c.SampleInterval.String(), "--cooldown " + c.Cooldown.String()}
+		if c.GeneratorHost != "" {
+			parts = append(parts, "--generator-host 'root@<generator-host>'", "--generator-address '<generator-address>'", "--fanout-listen '<fanout-listen>'")
+		}
 		if c.SSHPort != 0 && c.SSHPort != 22 {
 			parts = append(parts, "--ssh-port "+fmt.Sprint(c.SSHPort))
 		}

@@ -160,3 +160,67 @@ func TestHostDescriptionRecordedAndRendered(t *testing.T) {
 		t.Fatal("host description missing beside CPU model")
 	}
 }
+
+func TestSplitHostPlacementAndDescriptionRecordedAndRendered(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	managed := ManagedConfig{ProvisionedHost: "root@<host>", HostDescription: "Hetzner Cloud ccx33", GeneratorHostDescription: "Hetzner Cloud ccx43", GeneratorSSH: "root@10.77.0.3", GeneratorSSHIdentity: "/stage/key", TelemetrygenPath: "/remote/only/telemetrygen", Preset: "quick", Repeat: 1, BatchSize: 1000, SampleInterval: time.Second, TelemetrygenVersion: "v0.157.0"}
+	cfg := managedRunnerConfig(managed, "10.77.0.2:12345", "/stage/data")
+	cfg.Token = "test-token"
+	runner := Runner{Config: cfg}
+	report, err := runner.Run(ctx)
+	if err == nil || report == nil {
+		t.Fatalf("expected a partial report, got report=%v err=%v", report, err)
+	}
+	dir := t.TempDir()
+	if err := WriteArtifacts(dir, *report); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Host struct {
+			Description          string `json:"description"`
+			GeneratorDescription string `json:"generator_description"`
+			GeneratorLocal       bool   `json:"generator_on_target_host"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(data, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded.Host.GeneratorLocal || recorded.Host.Description != managed.HostDescription || recorded.Host.GeneratorDescription != managed.GeneratorHostDescription {
+		t.Fatalf("host=%+v", recorded.Host)
+	}
+	markdown, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ccx33", "| Generator host | Hetzner Cloud ccx43 |", "| Generator placement | separate/remote |"} {
+		if !strings.Contains(string(markdown), want) {
+			t.Errorf("Markdown missing %q", want)
+		}
+	}
+	loaded, err := LoadReport(filepath.Join(dir, "report.json"))
+	if err != nil || loaded.Host.GeneratorDescription != managed.GeneratorHostDescription {
+		t.Fatalf("roundtrip lost generator host: %+v, %v", loaded.Host, err)
+	}
+}
+
+func TestReproductionCommandRedactsGeneratorHostAndDropsAddresses(t *testing.T) {
+	for _, host := range []string{"root@192.0.2.11", "bench@generator.example", "root@[2001:db8::3]", "192.0.2.11"} {
+		cfg := Config{Host: "root@192.0.2.10", GeneratorHost: host, GeneratorAddress: "10.77.0.3", FanoutListen: "10.77.0.2", GeneratorSSH: "root@10.77.0.3", GeneratorSSHIdentity: "/stage/key", GeneratorSSHKnownHosts: "/stage/known_hosts", GeneratorHostDescription: "Hetzner ccx43"}
+		got := reproductionCommand(cfg)
+		for _, want := range []string{"--host 'root@<host>'", "--generator-host 'root@<generator-host>'", "--generator-address '<generator-address>'", "--fanout-listen '<fanout-listen>'", "--generator-host-description 'Hetzner ccx43'"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %s", want, got)
+			}
+		}
+		for _, unwanted := range []string{host, "192.0.2.10", cfg.GeneratorAddress, cfg.FanoutListen, "--generator-ssh", "/stage/"} {
+			if strings.Contains(got, unwanted) {
+				t.Errorf("unexpected %q in %s", unwanted, got)
+			}
+		}
+	}
+}

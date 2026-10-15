@@ -136,6 +136,83 @@ func TestManagedRemoteCommandQuotesEveryValue(t *testing.T) {
 	}
 }
 
+func TestSplitManagedRemoteCommand(t *testing.T) {
+	cfg := Config{Host: "root@192.0.2.10", SSHPort: 2222, GeneratorHost: "root@192.0.2.11", GeneratorAddress: "10.77.0.3", FanoutListen: "10.77.0.2", GeneratorHostDescription: "Generator's ccx43"}
+	got := managedRemoteCommand("/tmp/run", cfg, "dev", "verified")
+	for _, want := range []string{
+		"chmod 0600 '/tmp/run/generator_key'",
+		"'--listen' '10.77.0.2'", "'--generator-ssh' 'root@10.77.0.3'",
+		"'--generator-ssh-port' '2222'",
+		"'--generator-ssh-identity' '/tmp/run/generator_key'",
+		"'--generator-telemetrygen' '/tmp/run-generator/telemetrygen'",
+		"'--generator-host-description' 'Generator'\\''s ccx43'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"192.0.2.10", "192.0.2.11", "'/tmp/run/telemetrygen'", "'--telemetrygen'"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("unexpected %q in %s", unwanted, got)
+		}
+	}
+	cfg.GeneratorAddress = "fd77::3"
+	if got := managedRemoteCommand("/tmp/run", cfg, "dev", "verified"); !strings.Contains(got, "'root@[fd77::3]'") {
+		t.Fatalf("IPv6 target missing brackets: %s", got)
+	}
+}
+
+func TestGeneratorSSHDConfigIsScopedToRun(t *testing.T) {
+	for _, marker := range []string{"fanout-bench-first", "fanout-bench-second"} {
+		path := shellQuote("/etc/ssh/sshd_config.d/" + marker + ".conf")
+		key := "ssh-ed25519 AAAAtest " + marker
+		install := authorizeGeneratorKeyCommand(key+"\n", marker)
+		remove := removeGeneratorKeyCommand(marker)
+		if !strings.Contains(install, shellQuote(key)+" >> /root/.ssh/authorized_keys") ||
+			!strings.Contains(install, " > "+path+" && "+reloadSSHD) {
+			t.Fatalf("key and run-specific sshd config not installed together: %s", install)
+		}
+		if !strings.Contains(remove, shellQuote("/ "+marker+"$/d")) ||
+			!strings.Contains(remove, "rm -f "+path+" && "+reloadSSHD) {
+			t.Fatalf("cleanup missing run-specific key/config removal and reload: %s", remove)
+		}
+		for _, command := range []string{install, remove} {
+			// Every reference in the drop-in directory must name this run's file.
+			withoutPath := strings.ReplaceAll(command, path, "")
+			if strings.Contains(withoutPath, "/etc/ssh/sshd_config.d/") {
+				t.Fatalf("command touches another sshd drop-in: %s", command)
+			}
+		}
+	}
+}
+
+func TestGeneratorHostValidation(t *testing.T) {
+	valid := Config{Host: "root@fanout", GeneratorHost: "root@generator", GeneratorAddress: "10.77.0.3", FanoutListen: "10.77.0.2"}
+	if err := ValidateGeneratorHosts(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"hostname", "0.0.0.0", "::", "10.77.0.2:7520"} {
+		for _, field := range []string{"generator", "fanout"} {
+			cfg := valid
+			if field == "generator" {
+				cfg.GeneratorAddress = value
+			} else {
+				cfg.FanoutListen = value
+			}
+			if err := ValidateGeneratorHosts(cfg); err == nil {
+				t.Errorf("accepted %s IP %q", field, value)
+			}
+		}
+	}
+	for _, value := range []string{"-oProxyCommand=bad", "root@host;bad", "root@host name"} {
+		cfg := valid
+		cfg.GeneratorHost = value
+		if err := ValidateGeneratorHosts(cfg); err == nil {
+			t.Errorf("accepted unsafe generator SSH target %q", value)
+		}
+	}
+}
+
 func TestExtractBinarySelectsOnlyNamedRegularFile(t *testing.T) {
 	dir := t.TempDir()
 	archivePath := filepath.Join(dir, "release.tar.gz")

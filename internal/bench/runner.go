@@ -66,6 +66,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		Settings:      settingsFrom(r.Config),
 	}
 	report.Host.Description = r.Config.HostDescription
+	report.Host.GeneratorDescription = r.Config.GeneratorHostDescription
 	report.Settings.Methodology += readMethod
 	report.WorkloadSHA256 = workloadHash(report.Settings, plan)
 	report.ReproductionCommand = reproductionCommand(r.Config)
@@ -151,6 +152,9 @@ func (r *Runner) validate() error {
 		return errors.New("query URL is required when query rate is positive")
 	case cfg.QueryRate > 0 && strings.TrimSpace(cfg.QueryCookie) == "":
 		return errors.New("query session cookie is required when query rate is positive")
+	}
+	if cfg.GeneratorSSH != "" {
+		return requireCommand("ssh")
 	}
 	info, err := os.Stat(cfg.Telemetrygen)
 	if err != nil {
@@ -275,7 +279,8 @@ func (r *Runner) runGenerators(ctx context.Context, spec PhaseSpec) (int, int, e
 
 func (r *Runner) runGenerator(ctx context.Context, signal Signal, spec PhaseSpec) error {
 	args := generatorArgs(r.Config, signal, spec)
-	cmd := exec.CommandContext(ctx, r.Config.Telemetrygen, args...)
+	cmd, cancel := generatorCommand(ctx, r.Config, spec.Duration, args...)
+	defer cancel()
 	// telemetrygen logs its full configuration, including headers. Never stream
 	// child output or persist argv. Retain only a bounded tail for redacted errors.
 	output := &boundedBuffer{limit: 16 << 10}
@@ -284,6 +289,30 @@ func (r *Runner) runGenerator(ctx context.Context, signal Signal, spec PhaseSpec
 		return fmt.Errorf("telemetrygen %s: %w: %s", signal, err, redact(output.String(), r.Config.Token, r.Config.QueryCookie, r.Config.MetricsToken))
 	}
 	return nil
+}
+
+// The remote timeout bounds orphaned generators if the SSH connection is lost.
+// Give export draining ten seconds of margin beyond the configured timeouts.
+func generatorCommand(ctx context.Context, cfg Config, duration time.Duration, args ...string) (*exec.Cmd, context.CancelFunc) {
+	if cfg.GeneratorSSH == "" {
+		return exec.CommandContext(ctx, cfg.Telemetrygen, args...), func() {}
+	}
+	limit := duration + cfg.GeneratorTimeout + 10*time.Second
+	// Bound the SSH client too, allowing five seconds beyond the remote timeout.
+	ctx, cancel := context.WithTimeout(ctx, limit+5*time.Second)
+	remote := append([]string{"exec", "timeout", "--signal=TERM", strconv.FormatFloat(limit.Seconds(), 'f', -1, 64) + "s", cfg.Telemetrygen}, args...)
+	for i := range remote {
+		remote[i] = shellQuote(remote[i])
+	}
+	port := cfg.GeneratorSSHPort
+	if port == 0 {
+		port = 22
+	}
+	ssh := []string{"-p", strconv.Itoa(port), "-i", cfg.GeneratorSSHIdentity,
+		"-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+		"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=" + cfg.GeneratorSSHKnownHosts, cfg.GeneratorSSH, "--", strings.Join(remote, " ")}
+	return exec.CommandContext(ctx, "ssh", ssh...), cancel
 }
 
 func generatorArgs(cfg Config, signal Signal, spec PhaseSpec) []string {
@@ -566,8 +595,12 @@ func (r *Runner) buildManifest(ctx context.Context) Build {
 	if b.TelemetrygenVersion == "" {
 		cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if output, err := exec.CommandContext(cmdCtx, r.Config.Telemetrygen, "--version").CombinedOutput(); err == nil {
-			b.TelemetrygenVersion = strings.TrimSpace(string(output))
+		cmd, cancelGenerator := generatorCommand(cmdCtx, r.Config, 0, "--version")
+		defer cancelGenerator()
+		output := &boundedBuffer{limit: 16 << 10}
+		cmd.Stdout, cmd.Stderr = output, output
+		if err := cmd.Run(); err == nil {
+			b.TelemetrygenVersion = strings.TrimSpace(redact(output.String(), r.Config.Token, r.Config.QueryCookie, r.Config.MetricsToken))
 		}
 		if b.TelemetrygenVersion == "" {
 			b.TelemetrygenVersion = "unknown"

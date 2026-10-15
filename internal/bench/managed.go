@@ -25,32 +25,47 @@ import (
 )
 
 type ManagedConfig struct {
-	HostDescription        string
-	FanoutPath             string
-	TelemetrygenPath       string
-	OutputDir              string
-	FanoutVersion          string
-	FanoutArtifact         string
-	Preset                 string
-	Repeat                 int
-	BatchSize              int
-	QueryRate              float64
-	SampleInterval         time.Duration
-	Cooldown               time.Duration
-	HarnessVersion         string
-	TelemetrygenVersion    string
-	ProvisionedHost        string
-	ProvisionedSSHPort     int
-	ProvisionedSSHIdentity string
-	ProcessOverride        int
-	WorkerOverride         int
-	RateOverride           float64
-	DurationOverride       time.Duration
+	HostDescription          string
+	GeneratorHostDescription string
+	Listen                   string
+	GeneratorSSH             string
+	GeneratorSSHPort         int
+	GeneratorSSHIdentity     string
+	GeneratorTelemetrygen    string
+	FanoutPath               string
+	TelemetrygenPath         string
+	OutputDir                string
+	FanoutVersion            string
+	FanoutArtifact           string
+	Preset                   string
+	Repeat                   int
+	BatchSize                int
+	QueryRate                float64
+	SampleInterval           time.Duration
+	Cooldown                 time.Duration
+	HarnessVersion           string
+	TelemetrygenVersion      string
+	ProvisionedHost          string
+	ProvisionedSSHPort       int
+	ProvisionedSSHIdentity   string
+	ProcessOverride          int
+	WorkerOverride           int
+	RateOverride             float64
+	DurationOverride         time.Duration
 }
 
 var setupTokenPattern = regexp.MustCompile(`setup_token=([^\s]+)`)
 
 func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error {
+	if managed.GeneratorSSH != "" || managed.GeneratorSSHIdentity != "" || managed.GeneratorTelemetrygen != "" {
+		if managed.GeneratorSSH == "" || managed.GeneratorSSHIdentity == "" || managed.GeneratorTelemetrygen == "" {
+			return errors.New("--generator-ssh, --generator-ssh-identity, and --generator-telemetrygen are required together")
+		}
+		if !sshTargetPattern.MatchString(managed.GeneratorSSH) || strings.HasPrefix(managed.GeneratorSSH, "-") {
+			return errors.New("invalid generator SSH target")
+		}
+		managed.TelemetrygenPath = managed.GeneratorTelemetrygen
+	}
 	if managed.FanoutPath == "" || managed.TelemetrygenPath == "" || managed.OutputDir == "" {
 		return errors.New("managed paths are required")
 	}
@@ -62,7 +77,7 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	httpPort, err := freePort()
+	httpAddr, err := managedListenAddress(managed.Listen)
 	if err != nil {
 		return err
 	}
@@ -74,7 +89,6 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 	if err != nil {
 		return err
 	}
-	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
 	grpcAddr := httpAddr
 	metricsURL := "http://" + httpAddr + "/metrics"
 	baseURL := "http://" + httpAddr
@@ -171,7 +185,9 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 		return err
 	}
 
-	cfg := Config{Host: managed.ProvisionedHost, HostDescription: managed.HostDescription, SSHPort: managed.ProvisionedSSHPort, SSHIdentity: managed.ProvisionedSSHIdentity, Preset: managed.Preset, Endpoint: grpcAddr, MetricsURL: metricsURL, MetricsToken: metricsToken, Insecure: true, Telemetrygen: managed.TelemetrygenPath, Token: ingestToken, OutputDir: managed.OutputDir, FanoutVersion: actualVersion, FanoutArtifact: managed.FanoutArtifact, DataDir: dataDir, SampleInterval: managed.SampleInterval, GeneratorTimeout: 30 * time.Second, Cooldown: managed.Cooldown, Repeat: managed.Repeat, QueryURL: baseURL, QueryCookie: queryCookie, QueryRate: managed.QueryRate, SameHost: true, BatchSize: managed.BatchSize, TelemetrygenVersion: managed.TelemetrygenVersion, ProcessOverride: managed.ProcessOverride, WorkerOverride: managed.WorkerOverride, RateOverride: managed.RateOverride, DurationOverride: managed.DurationOverride}
+	cfg := managedRunnerConfig(managed, httpAddr, dataDir)
+	cfg.FanoutVersion = actualVersion
+	cfg.Token, cfg.MetricsToken, cfg.QueryCookie = ingestToken, metricsToken, queryCookie
 	runner := Runner{Config: cfg, Version: managed.HarnessVersion, Out: out, DeferSummary: true}
 	report, runErr := runner.Run(ctx)
 	stopFanout()
@@ -224,6 +240,30 @@ func RunManaged(ctx context.Context, managed ManagedConfig, out io.Writer) error
 		return errors.New("quality gates failed")
 	}
 	return nil
+}
+
+func managedRunnerConfig(managed ManagedConfig, httpAddr, dataDir string) Config {
+	cfg := Config{
+		Host: managed.ProvisionedHost, HostDescription: managed.HostDescription,
+		SSHPort: managed.ProvisionedSSHPort, SSHIdentity: managed.ProvisionedSSHIdentity,
+		Preset: managed.Preset, Repeat: managed.Repeat, BatchSize: managed.BatchSize,
+		Endpoint: httpAddr, MetricsURL: "http://" + httpAddr + "/metrics", QueryURL: "http://" + httpAddr,
+		Insecure: true, Telemetrygen: managed.TelemetrygenPath, OutputDir: managed.OutputDir,
+		FanoutVersion: managed.FanoutVersion, FanoutArtifact: managed.FanoutArtifact, DataDir: dataDir,
+		SampleInterval: managed.SampleInterval, GeneratorTimeout: 30 * time.Second, Cooldown: managed.Cooldown,
+		QueryRate: managed.QueryRate, SameHost: managed.GeneratorSSH == "", TelemetrygenVersion: managed.TelemetrygenVersion,
+		ProcessOverride: managed.ProcessOverride, WorkerOverride: managed.WorkerOverride,
+		RateOverride: managed.RateOverride, DurationOverride: managed.DurationOverride,
+	}
+	cfg.GeneratorSSH = managed.GeneratorSSH
+	cfg.GeneratorSSHPort = managed.GeneratorSSHPort
+	cfg.GeneratorSSHIdentity = managed.GeneratorSSHIdentity
+	cfg.GeneratorSSHKnownHosts = filepath.Join(filepath.Dir(dataDir), "generator_known_hosts")
+	cfg.GeneratorHostDescription = managed.GeneratorHostDescription
+	if managed.GeneratorSSH != "" {
+		cfg.GeneratorHost = "root@<generator-host>"
+	}
+	return cfg
 }
 
 func completeSetup(ctx context.Context, baseURL, setupToken string) (string, string, error) {
@@ -284,13 +324,19 @@ func completeSetup(ctx context.Context, baseURL, setupToken string) (string, str
 	}
 }
 
-func freePort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func managedListenAddress(ip string) (string, error) {
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+	if parsed := net.ParseIP(ip); parsed == nil || parsed.IsUnspecified() {
+		return "", fmt.Errorf("--listen requires a concrete IP address, got %q", ip)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
+	return listener.Addr().String(), nil
 }
 func randomHex(bytesCount int) (string, error) {
 	raw := make([]byte, bytesCount)

@@ -1,11 +1,86 @@
 package bench
 
 import (
+	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestGeneratorCommandWrapsSSHAndQuotesEveryArgument(t *testing.T) {
+	cfg := Config{Telemetrygen: "/stage/generator's binary", GeneratorSSH: "root@10.77.0.3", GeneratorSSHPort: 2222, GeneratorSSHIdentity: "/stage/key with spaces", GeneratorSSHKnownHosts: "/stage/known hosts", GeneratorTimeout: 30 * time.Second}
+	args := []string{"logs", "--otlp-header", "Authorization=\"Bearer token's $(touch /bad); value\""}
+	cmd, cancel := generatorCommand(context.Background(), cfg, 5*time.Second, args...)
+	defer cancel()
+	want := []string{"ssh", "-p", "2222", "-i", "/stage/key with spaces", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/stage/known hosts", "root@10.77.0.3", "--",
+		"'exec' 'timeout' '--signal=TERM' '45s' '/stage/generator'\\''s binary' 'logs' '--otlp-header' 'Authorization=\"Bearer token'\\''s $(touch /bad); value\"'"}
+	if !slices.Equal(cmd.Args, want) {
+		t.Fatalf("args=%q\nwant=%q", cmd.Args, want)
+	}
+	probe, cancelProbe := generatorCommand(context.Background(), cfg, 0, "--version")
+	defer cancelProbe()
+	if !slices.Equal(probe.Args[:len(probe.Args)-1], cmd.Args[:len(cmd.Args)-1]) {
+		t.Fatalf("version probe SSH options differ: %q", probe.Args)
+	}
+	if got := probe.Args[len(probe.Args)-1]; got != "'exec' 'timeout' '--signal=TERM' '40s' '/stage/generator'\\''s binary' '--version'" {
+		t.Fatalf("version command=%s", got)
+	}
+	cfg.GeneratorSSHPort = 0
+	defaultPort, cancelDefault := generatorCommand(context.Background(), cfg, 0, "--version")
+	defer cancelDefault()
+	if defaultPort.Args[1] != "-p" || defaultPort.Args[2] != "22" {
+		t.Fatalf("default port missing: %q", defaultPort.Args)
+	}
+	cfg.GeneratorSSH = ""
+	local, cancelLocal := generatorCommand(context.Background(), cfg, 5*time.Second, args...)
+	defer cancelLocal()
+	if !slices.Equal(local.Args, append([]string{cfg.Telemetrygen}, args...)) {
+		t.Fatalf("same-host command changed: %q", local.Args)
+	}
+}
+
+func TestGeneratorCommandClientDeadline(t *testing.T) {
+	if os.Getenv("FANOUT_BENCH_TEST_SILENT_CHILD") == "1" {
+		time.Sleep(time.Minute)
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, probe := range []bool{false, true} {
+		name := "launch"
+		if probe {
+			name = "version"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, stop := context.WithTimeout(context.Background(), 20*time.Second)
+			defer stop()
+			args, duration := []string{"logs"}, time.Millisecond
+			if probe {
+				args, duration = []string{"--version"}, 0
+			}
+			cmd, cancel := generatorCommand(ctx, Config{GeneratorSSH: "root@generator", Telemetrygen: "/telemetrygen"}, duration, args...)
+			defer cancel()
+			// Exercise the client's context with a silent local child; never run SSH.
+			cmd.Path = executable
+			cmd.Args = []string{executable, "-test.run=^TestGeneratorCommandClientDeadline$"}
+			cmd.Env = append(os.Environ(), "FANOUT_BENCH_TEST_SILENT_CHILD=1")
+			started := time.Now()
+			if err := cmd.Run(); err == nil {
+				t.Fatal("silent child escaped the client deadline")
+			}
+			elapsed := time.Since(started)
+			if elapsed < 14*time.Second || elapsed > 18*time.Second || ctx.Err() != nil {
+				t.Fatalf("client deadline took %s, parent error=%v; want remote limit + 5s", elapsed, ctx.Err())
+			}
+		})
+	}
+}
 
 func TestGeneratorArgsMatchPinnedTelemetrygenCLI(t *testing.T) {
 	cfg := Config{Endpoint: "localhost:7520", Token: "token with space", GeneratorTimeout: 30, Insecure: true}
