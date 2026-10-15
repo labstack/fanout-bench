@@ -4,12 +4,54 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestManagedListenDerivesAllEndpointsAndPlacement(t *testing.T) {
+	for _, ip := range []string{"", "127.0.0.1"} {
+		addr, err := managedListenAddress(ip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
+			t.Fatalf("address=%q, err=%v", addr, err)
+		}
+	}
+	for _, ip := range []string{"hostname", "10.77.0.2:7520", "0.0.0.0", "::"} {
+		if _, err := managedListenAddress(ip); err == nil {
+			t.Errorf("accepted invalid listen IP %q", ip)
+		}
+	}
+	// These addresses need not belong to the test machine: endpoint derivation
+	// is independent of port reservation and works for private IPv4 and IPv6.
+	for _, addr := range []string{"10.77.0.2:12345", "[fd77::2]:12345"} {
+		for _, split := range []bool{false, true} {
+			managed := ManagedConfig{TelemetrygenPath: "/generator/telemetrygen", HostDescription: "Fanout ccx33", GeneratorHostDescription: "Generator ccx43"}
+			if split {
+				managed.GeneratorSSH = "root@10.77.0.3"
+				managed.GeneratorSSHPort = 2222
+				managed.GeneratorSSHIdentity = "/stage/generator_key"
+			}
+			cfg := managedRunnerConfig(managed, addr, "/stage/data")
+			if cfg.Endpoint != addr || cfg.MetricsURL != "http://"+addr+"/metrics" || cfg.QueryURL != "http://"+addr {
+				t.Fatalf("endpoints=%+v", cfg)
+			}
+			if cfg.SameHost == split || cfg.GeneratorSSH != managed.GeneratorSSH || cfg.GeneratorSSHPort != managed.GeneratorSSHPort || cfg.GeneratorSSHIdentity != managed.GeneratorSSHIdentity || cfg.GeneratorSSHKnownHosts != filepath.Join("/stage", "generator_known_hosts") {
+				t.Fatalf("generator placement=%+v", cfg)
+			}
+			if cfg.GeneratorHostDescription != managed.GeneratorHostDescription || cfg.HostDescription != managed.HostDescription {
+				t.Fatal("managed runner lost host descriptions")
+			}
+		}
+	}
+}
 
 func TestFanoutEnvironmentUsesCurrentSchema(t *testing.T) {
 	// Schema env tags captured from internal/config/config.go at 870c90db.

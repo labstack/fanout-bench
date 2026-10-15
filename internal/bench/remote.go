@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,7 +23,33 @@ import (
 var sshTargetPattern = regexp.MustCompile(`^(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\])$`)
 var fanoutVersionPattern = regexp.MustCompile(`^v[0-9]{4}\.(?:[1-9]|1[0-2])\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta|rc))?$`)
 
+// ValidateGeneratorHosts also runs before local execution, so partial split
+// configurations cannot silently fall back to same-host load.
+func ValidateGeneratorHosts(cfg Config) error {
+	if cfg.GeneratorHost == "" && cfg.GeneratorAddress == "" && cfg.FanoutListen == "" && cfg.GeneratorHostDescription == "" {
+		return nil
+	}
+	if cfg.Host == "" {
+		return errors.New("generator host flags require a remote run with --host")
+	}
+	if cfg.GeneratorHost == "" || cfg.GeneratorAddress == "" || cfg.FanoutListen == "" {
+		return errors.New("--generator-host, --generator-address, and --fanout-listen are required together")
+	}
+	if !sshTargetPattern.MatchString(cfg.GeneratorHost) || strings.HasPrefix(cfg.GeneratorHost, "-") {
+		return fmt.Errorf("unsafe generator SSH target %q", cfg.GeneratorHost)
+	}
+	for _, address := range []string{cfg.GeneratorAddress, cfg.FanoutListen} {
+		if ip := net.ParseIP(address); ip == nil || ip.IsUnspecified() {
+			return fmt.Errorf("invalid host IP %q", address)
+		}
+	}
+	return nil
+}
+
 func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) error {
+	if err := ValidateGeneratorHosts(cfg); err != nil {
+		return err
+	}
 	if !sshTargetPattern.MatchString(cfg.Host) || strings.HasPrefix(cfg.Host, "-") {
 		return fmt.Errorf("unsafe SSH target %q", cfg.Host)
 	}
@@ -47,6 +74,11 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 	if err := requireCommand("go"); err != nil {
 		return err
 	}
+	if cfg.GeneratorHost != "" {
+		if err := requireCommand("ssh-keygen"); err != nil {
+			return err
+		}
+	}
 
 	fmt.Fprintf(out, "Fanout Bench remote provision\n  host       %s\n  release    %s\n  preset     %s × %d\n", cfg.Host, cfg.FanoutVersion, cfg.Preset, cfg.Repeat)
 	remoteOS, remoteArch, err := detectRemote(ctx, cfg)
@@ -56,6 +88,19 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 	fmt.Fprintf(out, "  platform   %s/%s\n", remoteOS, remoteArch)
 	if remoteOS != "linux" {
 		return fmt.Errorf("remote OS %q is not supported; remote benchmark hosts must run Linux", remoteOS)
+	}
+	generator := cfg
+	generator.Host = cfg.GeneratorHost
+	generatorOS, generatorArch := remoteOS, remoteArch
+	if cfg.GeneratorHost != "" {
+		generatorOS, generatorArch, err = detectRemote(ctx, generator)
+		if err != nil {
+			return err
+		}
+		if generatorOS != "linux" {
+			return fmt.Errorf("generator OS %q is not supported; generator hosts must run Linux", generatorOS)
+		}
+		fmt.Fprintf(out, "  generator  %s (%s/%s)\n", generator.Host, generatorOS, generatorArch)
 	}
 
 	buildDir, err := os.MkdirTemp("", "fanout-bench-provision-*")
@@ -69,7 +114,7 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 	if err != nil {
 		return fmt.Errorf("build remote harness: %w", err)
 	}
-	telemetrygenPath, err := buildTelemetrygen(ctx, buildDir, remoteOS, remoteArch, cfg.TelemetrygenVersion)
+	telemetrygenPath, err := buildTelemetrygen(ctx, buildDir, generatorOS, generatorArch, cfg.TelemetrygenVersion)
 	if err != nil {
 		return fmt.Errorf("build telemetrygen: %w", err)
 	}
@@ -79,24 +124,71 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 		return fmt.Errorf("fetch Fanout release: %w", err)
 	}
 
-	suffix, _ := randomHex(4)
+	suffix, err := randomHex(16)
+	if err != nil {
+		return err
+	}
 	stage := "/tmp/fanout-bench-" + time.Now().UTC().Format("20060102T150405Z") + "-" + suffix
+	generatorStage := stage + "-generator"
+	marker := "fanout-bench-" + suffix
+	cleanup := func() {
+		if cfg.GeneratorHost != "" {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := sshRun(cleanupCtx, generator, io.Discard, "status=0; "+removeGeneratorKeyCommand(marker)+" || status=$?; rm -rf -- "+shellQuote(generatorStage)+" || status=$?; exit \"$status\""); err != nil {
+				fmt.Fprintf(out, "cleanup generator %s (key %s, stage %s): %v\n", generator.Host, marker, generatorStage, err)
+			}
+			cancel()
+		}
+		command := "rm -rf -- " + shellQuote(stage)
+		if cfg.KeepRemote {
+			fmt.Fprintf(out, "\n  remote run preserved: %s:%s\n", cfg.Host, stage)
+			if cfg.GeneratorHost == "" {
+				return
+			}
+			// Even a preserved evidence stage must not retain a private key.
+			command = "rm -f -- " + shellQuote(stage+"/generator_key")
+		}
+		// Each host gets its own deadline: an unreachable generator must not
+		// prevent removal of the Fanout stage and its private key.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := sshRun(cleanupCtx, cfg, io.Discard, command); err != nil {
+			fmt.Fprintf(out, "cleanup Fanout stage %s:%s: %v\n", cfg.Host, stage, err)
+		}
+	}
+	defer cleanup()
 	if err := sshRun(ctx, cfg, out, "install -d -m 0700 "+shellQuote(stage)); err != nil {
 		return fmt.Errorf("create remote stage: %w", err)
 	}
-	cleanup := func() {
-		if cfg.KeepRemote {
-			fmt.Fprintf(out, "\n  remote run preserved: %s:%s\n", cfg.Host, stage)
-			return
-		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = sshRun(cleanupCtx, cfg, io.Discard, "rm -rf -- "+shellQuote(stage))
-	}
-	defer cleanup()
 
-	fmt.Fprintln(out, "  ◌ uploading Fanout, telemetrygen, and the benchmark agent")
-	if err := scpUpload(ctx, cfg, stage, harnessPath, telemetrygenPath, fanoutPath); err != nil {
+	fmt.Fprintln(out, "  ◌ uploading architecture-matched binaries")
+	paths := []string{harnessPath, fanoutPath}
+	if cfg.GeneratorHost == "" {
+		paths = append(paths, telemetrygenPath)
+	} else {
+		if err := sshRun(ctx, generator, out, "install -d -m 0700 "+shellQuote(generatorStage)); err != nil {
+			return fmt.Errorf("create generator stage: %w", err)
+		}
+		if err := scpUpload(ctx, generator, generatorStage, telemetrygenPath); err != nil {
+			return err
+		}
+		if err := sshRun(ctx, generator, out, "chmod 0700 "+shellQuote(generatorStage+"/telemetrygen")); err != nil {
+			return err
+		}
+		keyPath := filepath.Join(buildDir, "generator_key")
+		if data, err := exec.CommandContext(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", marker, "-f", keyPath).CombinedOutput(); err != nil {
+			return fmt.Errorf("create generator identity: %w: %s", err, data)
+		}
+		publicKey, err := os.ReadFile(keyPath + ".pub")
+		if err != nil {
+			return err
+		}
+		if err := sshRun(ctx, generator, out, authorizeGeneratorKeyCommand(string(publicKey), marker)); err != nil {
+			return fmt.Errorf("authorize generator identity: %w", err)
+		}
+		paths = append(paths, keyPath)
+	}
+	if err := scpUpload(ctx, cfg, stage, paths...); err != nil {
 		return err
 	}
 	remoteCommand := managedRemoteCommand(stage, cfg, version, artifact)
@@ -355,16 +447,54 @@ func extractBinary(archivePath, destination, name string) error {
 }
 
 func managedRemoteCommand(stage string, cfg Config, version, artifact string) string {
-	args := []string{stage + "/fanout-bench", "managed", "--fanout", stage + "/fanout", "--telemetrygen", stage + "/telemetrygen", "--output", stage + "/results", "--fanout-version", cfg.FanoutVersion, "--fanout-artifact", artifact, "--preset", cfg.Preset, "--repeat", fmt.Sprint(cfg.Repeat), "--batch-size", fmt.Sprint(cfg.BatchSize), "--query-rate", fmt.Sprint(cfg.QueryRate), "--sample-interval", cfg.SampleInterval.String(), "--cooldown", cfg.Cooldown.String(), "--harness-version", version}
+	args := []string{stage + "/fanout-bench", "managed", "--fanout", stage + "/fanout", "--output", stage + "/results", "--fanout-version", cfg.FanoutVersion, "--fanout-artifact", artifact, "--preset", cfg.Preset, "--repeat", fmt.Sprint(cfg.Repeat), "--batch-size", fmt.Sprint(cfg.BatchSize), "--query-rate", fmt.Sprint(cfg.QueryRate), "--sample-interval", cfg.SampleInterval.String(), "--cooldown", cfg.Cooldown.String(), "--harness-version", version}
 	args = append(args, "--telemetrygen-version", cfg.TelemetrygenVersion)
 	args = append(args, "--provisioned-host", redactedHost(cfg.Host), "--host-description", cfg.HostDescription)
 	args = append(args, "--provisioned-ssh-port", fmt.Sprint(cfg.SSHPort), "--provisioned-ssh-identity", cfg.SSHIdentity)
 	args = append(args, "--processes", fmt.Sprint(cfg.ProcessOverride), "--workers", fmt.Sprint(cfg.WorkerOverride), "--rate", fmt.Sprint(cfg.RateOverride), "--duration", cfg.DurationOverride.String())
+	binaries := []string{stage + "/fanout-bench", stage + "/fanout"}
+	prefix := ""
+	if cfg.GeneratorHost == "" {
+		binaries = append(binaries, stage+"/telemetrygen")
+		args = append(args, "--telemetrygen", stage+"/telemetrygen")
+	} else {
+		address := cfg.GeneratorAddress
+		if strings.Contains(address, ":") {
+			address = "[" + address + "]"
+		}
+		args = append(args, "--listen", cfg.FanoutListen, "--generator-ssh", "root@"+address,
+			"--generator-ssh-port", fmt.Sprint(cfg.SSHPort),
+			"--generator-ssh-identity", stage+"/generator_key", "--generator-telemetrygen", stage+"-generator/telemetrygen",
+			"--generator-host-description", cfg.GeneratorHostDescription)
+		prefix = "chmod 0600 " + shellQuote(stage+"/generator_key") + " && "
+	}
 	quoted := make([]string, len(args))
 	for i, arg := range args {
 		quoted[i] = shellQuote(arg)
 	}
-	return "chmod 0700 " + shellQuote(stage+"/fanout-bench") + " " + shellQuote(stage+"/telemetrygen") + " " + shellQuote(stage+"/fanout") + " && " + strings.Join(quoted, " ")
+	for i := range binaries {
+		binaries[i] = shellQuote(binaries[i])
+	}
+	return prefix + "chmod 0700 " + strings.Join(binaries, " ") + " && " + strings.Join(quoted, " ")
+}
+
+// generatorSSHDConfig lifts sshd's default MaxStartups (10:30:100) for the run:
+// the largest phase opens one connection per generator process at once, and
+// the default randomly refuses connections beyond ten unauthenticated ones.
+func generatorSSHDConfig(marker string) string {
+	return "/etc/ssh/sshd_config.d/" + marker + ".conf"
+}
+
+const reloadSSHD = "(systemctl reload ssh 2>/dev/null || systemctl reload sshd)"
+
+func authorizeGeneratorKeyCommand(publicKey, marker string) string {
+	return "install -d -m 0700 /root/.ssh && touch /root/.ssh/authorized_keys && chmod 0600 /root/.ssh/authorized_keys && printf '\\n%s\\n' " + shellQuote(strings.TrimSpace(publicKey)) + " >> /root/.ssh/authorized_keys" +
+		" && printf 'MaxStartups 256\\nMaxSessions 256\\n' > " + shellQuote(generatorSSHDConfig(marker)) + " && " + reloadSSHD
+}
+
+func removeGeneratorKeyCommand(marker string) string {
+	return "if [ -f /root/.ssh/authorized_keys ]; then sed -i " + shellQuote("/ "+marker+"$/d") + " /root/.ssh/authorized_keys; fi" +
+		"; if [ -f " + shellQuote(generatorSSHDConfig(marker)) + " ]; then rm -f " + shellQuote(generatorSSHDConfig(marker)) + " && " + reloadSSHD + "; fi"
 }
 
 func sshArgs(cfg Config) []string {

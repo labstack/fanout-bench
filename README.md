@@ -22,20 +22,20 @@ With pinned telemetrygen v0.157, each generated trace exports one parent and one
 
 ## Quick start
 
-Prerequisites: [hcloud](https://github.com/hetznercloud/cli) with an active context (or `HCLOUD_TOKEN`), a registered Hetzner SSH key available to your SSH client, Go 1.27+, [just](https://github.com/casey/just), and SSH/SCP.
+Prerequisites: [hcloud](https://github.com/hetznercloud/cli) with an active context (or `HCLOUD_TOKEN`), a registered Hetzner SSH key available to your SSH client, Go 1.27+, `ssh-keygen`, [just](https://github.com/casey/just), and SSH/SCP.
 
 ```sh
 export FANOUT_BENCH_HCLOUD_SSH_KEY='benchmark-key'
 just hetzner --fanout-version v2026.10.1-alpha --preset quick
 ```
 
-The script runs `just build` before provisioning, creates a fresh Hetzner Cloud VM with a random name suffix, waits for SSH, runs the harness for each group, downloads the evidence, and attempts deletion on every exit, including failures and Ctrl-C. If deletion fails after three attempts, it prints the server name for manual deletion and exits nonzero. Hetzner bills every started hour, so grouping runs in one invocation shares that VM time.
+The script runs `just build` before provisioning, creates a private network and two fresh Hetzner Cloud VMs with unique names, waits for SSH on both, runs the harness for each group, and downloads the evidence. Cleanup attempts to delete both servers and then the network on every exit, including failures and Ctrl-C. After three failed attempts it names each resource requiring manual deletion and exits nonzero. Hetzner bills every started hour for each VM, so grouping runs shares the billing time of both machines.
 
-The defaults are `ccx33` (8 dedicated vCPUs, 32 GB RAM), `fsn1`, and `ubuntu-24.04`. Override them with `FANOUT_BENCH_HCLOUD_TYPE`, `FANOUT_BENCH_HCLOUD_LOCATION`, and `FANOUT_BENCH_HCLOUD_IMAGE`. `FANOUT_BENCH_HCLOUD_SSH_KEY` also accepts comma-separated key names. Each invocation shares one temporary known-hosts file across its groups, leaving your SSH known-hosts file untouched. Pass `--ssh-identity ~/.ssh/benchmark` if the registered key is not available through your SSH agent.
+The defaults are a `ccx33` for Fanout (8 dedicated vCPUs, 32 GB RAM) and a separate `ccx43` for generators (16 dedicated vCPUs, 64 GB RAM), both in `fsn1` on `ubuntu-24.04`. OTLP travels over a private network (`10.77.0.0/16`, cloud subnet `10.77.0.0/24`) in that location’s network zone. Override the VM types with `FANOUT_BENCH_HCLOUD_TYPE` and `FANOUT_BENCH_HCLOUD_GENERATOR_TYPE`, and location/image with `FANOUT_BENCH_HCLOUD_LOCATION` and `FANOUT_BENCH_HCLOUD_IMAGE`. The hourly VM cost is **ccx33 hourly rate + ccx43 hourly rate**, plus applicable public IPv4 charges and tax; budget for both machines for every started hour. Check the selected location’s current rates before provisioning. `FANOUT_BENCH_HCLOUD_SSH_KEY` also accepts comma-separated key names. Each invocation shares one temporary known-hosts file across its groups, leaving your SSH known-hosts file untouched. Pass `--ssh-identity ~/.ssh/benchmark` if the registered key is not available through your SSH agent.
 
-Separate complete sets of `fanout-bench run` flags with a standalone `--`. Groups must be nonempty and use matching SSH port and identity settings (defaults: port 22 and the SSH client's default identity). All groups run in order even if one fails, with a one-line summary per group at the end and a nonzero exit if any failed. They share one VM and host description; each harness run creates a fresh remote directory and Fanout data directory. The VM is deleted after the last group.
+Separate complete sets of `fanout-bench run` flags with a standalone `--`. Groups must be nonempty and use matching SSH port and identity settings (defaults: port 22 and the SSH client's default identity). All groups run in order even if one fails, with a one-line summary per group at the end and a nonzero exit if any failed. They share both VMs, the private network, and both host descriptions; each harness run creates fresh stages and a fresh Fanout data directory. Both VMs and the network are deleted after the last group.
 
-Any clean SSH-accessible Linux host is also supported:
+A plain `--host` run on any clean SSH-accessible Linux host runs Fanout and telemetrygen together on that host:
 
 ```sh
 just build
@@ -58,9 +58,26 @@ Replace `<host>` with the address of your host. The remote harness:
 8. downloads `report.json`, `report.md`, and `samples.jsonl` locally;
 9. stops Fanout and removes the remote run directory.
 
-For an existing host, pass `--ssh-identity ~/.ssh/benchmark`, `--ssh-port 2222`, or `--ssh-known-hosts <file>` when needed. `--host-description <text>` records the provider or machine configuration beside the detected CPU model. Reports redact the SSH address and omit the run-scoped known-hosts path from reproduction commands. `--keep-remote` preserves the isolated directory on an existing host for investigation; the Hetzner script always deletes its VM.
+For an existing host, pass `--ssh-identity ~/.ssh/benchmark`, `--ssh-port 2222`, or `--ssh-known-hosts <file>` when needed. `--host-description <text>` records the provider or machine configuration beside the detected CPU model. Reports redact the SSH address and omit the run-scoped known-hosts path from reproduction commands. `--keep-remote` preserves the Fanout directory on an existing host for investigation; split runs still remove the generator stage and ephemeral SSH key. The Hetzner script always deletes both VMs and the network.
 
-Nothing is installed system-wide. Existing Fanout services and data directories are not touched. The remote host needs no Go toolchain, Docker daemon, or preconfigured Fanout account.
+To use two existing clean Linux hosts, add all three split flags together:
+
+```sh
+./bin/fanout-bench run \
+  --host 'root@<fanout-public>' \
+  --generator-host 'root@<generator-public>' \
+  --generator-address 10.77.0.3 \
+  --fanout-listen 10.77.0.2 \
+  --host-description 'Fanout host' \
+  --generator-host-description 'Generator host' \
+  --fanout-version v2026.10.1-alpha --preset quick
+```
+
+The public SSH targets are used by your local machine for provisioning. The two IP flags must be reachable between the hosts, with SSH from Fanout to the generator and OTLP from the generator to Fanout. Provisioning detects both Linux architectures, builds the harness for Fanout and telemetrygen for the generator, and uploads each binary only where it runs. A local temporary ed25519 key grants the Fanout host access to the generator for that run; its public key has a unique authorized-keys marker, and the private key is uploaded with mode `0600` into the Fanout stage. Both stages use mode `0700`.
+
+`managed` remains the sole orchestrator on the Fanout host: it binds Fanout to the supplied private IP on a free port, performs setup, samples metrics, issues read load, verifies storage, and writes the report. Every telemetrygen process runs through SSH on the generator host, bounded by a remote timeout. Cleanup removes the marked authorized-key line, the private key, and both stages. Reports record both host descriptions and `generator_on_target_host: false`; reproduction commands redact both public targets and omit the private IP flags.
+
+Nothing is installed system-wide. Existing Fanout services and data directories are not touched. Neither remote host needs a Go toolchain or Docker daemon, and Fanout needs no preconfigured account. The Fanout host needs an SSH client; the generator host needs an SSH server and GNU `timeout` (included in the default Ubuntu image).
 
 > `telemetrygen` currently accepts OTLP headers through a command-line flag and prints those headers in its startup configuration. Fanout Bench suppresses and redacts child output, but the short-lived ingest token can still be visible to local process-listing tools while a generator is running. Use a dedicated token and revoke it after the run.
 
@@ -74,7 +91,7 @@ Nothing is installed system-wide. Existing Fanout services and data directories 
 
 The default topology is 8 workers per process at 2,500 items/s per worker with 1,000-item OTLP batches. A mixed step launches the same topology independently for traces, logs, and metrics. Without read load, the sustained proof reruns the mixed topology with the highest **accepted** throughput. With `--query-rate`, it chooses the highest-throughput topology that also completed at least 95% of the requested reads with no errors or scheduler shedding. If no sweep point qualifies, it repeats the best read-completion point and fails the sustained-read quality gate rather than publishing a write-only peak as mixed capacity.
 
-For publication runs, use the default ccx33 and three repetitions. Run ingest-only and read-under-write as two groups in one invocation on the same fresh VM; see [the publication commands](docs/publishing.md#publication-runs). For example:
+For publication runs, dedicate the default ccx33 to Fanout and use the separate ccx43 for generators, with three repetitions. Run ingest-only and read-under-write as two groups sharing the same fresh pair of VMs; see [the publication commands](docs/publishing.md#publication-runs). For example:
 
 ```sh
 scripts/hetzner.sh \
@@ -87,7 +104,7 @@ scripts/hetzner.sh \
   --output results/publish-read-write-2026-10-14
 ```
 
-Provisioned runs deliberately place Fanout and generators on the same remote host, measuring the complete single-node product under load. The report labels this an observed same-host ceiling and warns that generator contention can make it lower than Fanout's isolated backend ceiling.
+Publication runs measure Fanout’s ingest ceiling with all eight ccx33 vCPUs available to Fanout; telemetrygen runs on the separate ccx43 over the private network. A plain `--host` run without the three split flags remains a same-host run, and its report warns about generator contention.
 
 ## Read and write together
 
@@ -123,8 +140,8 @@ The terminal output is optimized for decisions:
 ╭────────────────────────────────────────────────────────────────────╮
 │  FANOUT BENCH  •  accepted-row performance, with evidence          │
 ╰────────────────────────────────────────────────────────────────────╯
-  Target       localhost:7520  (plaintext gRPC)
-  Generator    telemetrygen v0.157.0  same-host=true
+  Target       10.77.0.2:39281  (plaintext gRPC)
+  Generator    telemetrygen v0.157.0  same-host=false
   Suite        standard  repeat=1  18 phases  ~5.2 min load time
   Evidence     Fanout counters @ /metrics  samples every 1.0s
 
@@ -220,6 +237,6 @@ export FANOUT_BENCH_METRICS_TOKEN='matching-Fanout-metrics-token'
   --same-host
 ```
 
-Managed runs set `FANOUT_ADDR` to one loopback random port for OTLP/gRPC, OTLP/HTTP, the API, and `/metrics`. Metrics stay private: a per-run `FANOUT_METRICS_TOKEN` is sent as `Authorization: Bearer …` and never written to artifacts. MCP, alerts, and chat stay disabled.
+Managed runs set `FANOUT_ADDR` to one random port shared by OTLP/gRPC, OTLP/HTTP, the API, and `/metrics`. Split runs bind the private listen IP; same-host runs bind loopback. Metrics stay private: a per-run `FANOUT_METRICS_TOKEN` is sent as `Authorization: Bearer …` and never written to artifacts. MCP, alerts, and chat stay disabled.
 
 Private local metrics endpoints use `FANOUT_BENCH_METRICS_TOKEN`. Local authenticated read load uses `FANOUT_BENCH_QUERY_COOKIE`. Secrets have no value flags and are never persisted. telemetrygen does expose its OTLP header in its process arguments while running, so use only a dedicated short-lived token and revoke it afterward. Managed remote runs create and destroy this token automatically.

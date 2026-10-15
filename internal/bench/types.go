@@ -16,38 +16,46 @@ const (
 var Signals = []Signal{Traces, Logs, Metrics}
 
 type Config struct {
-	Host                string
-	HostDescription     string
-	SSHKnownHosts       string
-	SSHIdentity         string
-	SSHPort             int
-	KeepRemote          bool
-	Preset              string
-	Endpoint            string
-	MetricsURL          string
-	Insecure            bool
-	Telemetrygen        string
-	Token               string
-	MetricsToken        string
-	OutputDir           string
-	FanoutVersion       string
-	FanoutCommit        string
-	FanoutArtifact      string
-	DataDir             string
-	SampleInterval      time.Duration
-	GeneratorTimeout    time.Duration
-	Cooldown            time.Duration
-	Repeat              int
-	QueryURL            string
-	QueryCookie         string
-	QueryRate           float64
-	SameHost            bool
-	ProcessOverride     int
-	WorkerOverride      int
-	RateOverride        float64
-	DurationOverride    time.Duration
-	BatchSize           int
-	TelemetrygenVersion string
+	Host                     string
+	HostDescription          string
+	GeneratorHost            string
+	GeneratorAddress         string
+	FanoutListen             string
+	GeneratorHostDescription string
+	GeneratorSSH             string
+	GeneratorSSHPort         int
+	GeneratorSSHIdentity     string
+	GeneratorSSHKnownHosts   string
+	SSHKnownHosts            string
+	SSHIdentity              string
+	SSHPort                  int
+	KeepRemote               bool
+	Preset                   string
+	Endpoint                 string
+	MetricsURL               string
+	Insecure                 bool
+	Telemetrygen             string
+	Token                    string
+	MetricsToken             string
+	OutputDir                string
+	FanoutVersion            string
+	FanoutCommit             string
+	FanoutArtifact           string
+	DataDir                  string
+	SampleInterval           time.Duration
+	GeneratorTimeout         time.Duration
+	Cooldown                 time.Duration
+	Repeat                   int
+	QueryURL                 string
+	QueryCookie              string
+	QueryRate                float64
+	SameHost                 bool
+	ProcessOverride          int
+	WorkerOverride           int
+	RateOverride             float64
+	DurationOverride         time.Duration
+	BatchSize                int
+	TelemetrygenVersion      string
 }
 
 type PhaseSpec struct {
@@ -76,15 +84,16 @@ func (p PhaseSpec) OfferedPerSecond() float64 {
 }
 
 type Host struct {
-	Description    string `json:"description,omitempty"`
-	OS             string `json:"os"`
-	Architecture   string `json:"architecture"`
-	CPUModel       string `json:"cpu_model,omitempty"`
-	LogicalCPUs    int    `json:"logical_cpus"`
-	MemoryBytes    uint64 `json:"memory_bytes,omitempty"`
-	GoVersion      string `json:"go_version"`
-	Hostname       string `json:"hostname,omitempty"`
-	GeneratorLocal bool   `json:"generator_on_target_host"`
+	Description          string `json:"description,omitempty"`
+	GeneratorDescription string `json:"generator_description,omitempty"`
+	OS                   string `json:"os"`
+	Architecture         string `json:"architecture"`
+	CPUModel             string `json:"cpu_model,omitempty"`
+	LogicalCPUs          int    `json:"logical_cpus"`
+	MemoryBytes          uint64 `json:"memory_bytes,omitempty"`
+	GoVersion            string `json:"go_version"`
+	Hostname             string `json:"hostname,omitempty"`
+	GeneratorLocal       bool   `json:"generator_on_target_host"`
 }
 
 type Build struct {

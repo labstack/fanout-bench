@@ -67,6 +67,12 @@ func commonFlags(name string, args []string) (bench.Config, error) {
 	fs.StringVar(&cfg.SSHIdentity, "ssh-identity", "", "SSH private key path")
 	fs.StringVar(&cfg.SSHKnownHosts, "ssh-known-hosts", "", "run-scoped SSH known-hosts file")
 	fs.StringVar(&cfg.HostDescription, "host-description", "", "host description recorded alongside hardware evidence")
+	if name == "run" {
+		fs.StringVar(&cfg.GeneratorHost, "generator-host", "", "SSH target to provision as a separate generator host")
+		fs.StringVar(&cfg.GeneratorAddress, "generator-address", "", "generator host IP reachable from the Fanout host")
+		fs.StringVar(&cfg.FanoutListen, "fanout-listen", "", "Fanout host IP reachable from the generator host")
+		fs.StringVar(&cfg.GeneratorHostDescription, "generator-host-description", "", "generator host description recorded in the report")
+	}
 	fs.IntVar(&cfg.SSHPort, "ssh-port", 22, "SSH port")
 	fs.BoolVar(&cfg.KeepRemote, "keep-remote", false, "preserve the isolated remote run directory after downloading artifacts")
 	fs.StringVar(&cfg.Preset, "preset", "standard", "suite: quick, standard, or publish")
@@ -96,6 +102,9 @@ func commonFlags(name string, args []string) (bench.Config, error) {
 	fs.Float64Var(&cfg.RateOverride, "rate", 0, "override items/s per telemetrygen worker")
 	fs.DurationVar(&cfg.DurationOverride, "duration", 0, "override every measurement duration (use for diagnostics)")
 	if err := fs.Parse(args); err != nil {
+		return cfg, err
+	}
+	if err := bench.ValidateGeneratorHosts(cfg); err != nil {
 		return cfg, err
 	}
 	cfg.Token = os.Getenv(tokenEnv)
@@ -145,6 +154,11 @@ func managed(ctx context.Context, args []string) error {
 	var cfg bench.ManagedConfig
 	fs.StringVar(&cfg.FanoutPath, "fanout", "./fanout", "provisioned Fanout binary")
 	fs.StringVar(&cfg.TelemetrygenPath, "telemetrygen", "./telemetrygen", "provisioned telemetrygen binary")
+	fs.StringVar(&cfg.Listen, "listen", "127.0.0.1", "Fanout listen IP for OTLP, metrics, and queries")
+	fs.StringVar(&cfg.GeneratorSSH, "generator-ssh", "", "SSH target for telemetrygen launches")
+	fs.IntVar(&cfg.GeneratorSSHPort, "generator-ssh-port", 22, "SSH port for telemetrygen launches")
+	fs.StringVar(&cfg.GeneratorSSHIdentity, "generator-ssh-identity", "", "ephemeral SSH private key for the generator host")
+	fs.StringVar(&cfg.GeneratorTelemetrygen, "generator-telemetrygen", "", "telemetrygen path on the generator host")
 	fs.StringVar(&cfg.OutputDir, "output", "./results", "remote evidence directory")
 	fs.StringVar(&cfg.FanoutVersion, "fanout-version", "unknown", "Fanout version")
 	fs.StringVar(&cfg.FanoutArtifact, "fanout-artifact", "", "verified release artifact identity")
@@ -158,6 +172,7 @@ func managed(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.TelemetrygenVersion, "telemetrygen-version", "v0.157.0", "telemetrygen version")
 	fs.StringVar(&cfg.ProvisionedHost, "provisioned-host", "", "SSH target used to construct the redacted reproduction command")
 	fs.StringVar(&cfg.HostDescription, "host-description", "", "host description recorded alongside hardware evidence")
+	fs.StringVar(&cfg.GeneratorHostDescription, "generator-host-description", "", "generator host description recorded in the report")
 	fs.IntVar(&cfg.ProvisionedSSHPort, "provisioned-ssh-port", 22, "SSH port recorded in remote evidence")
 	fs.StringVar(&cfg.ProvisionedSSHIdentity, "provisioned-ssh-identity", "", "SSH identity path recorded in remote evidence")
 	fs.IntVar(&cfg.ProcessOverride, "processes", 0, "override process count per signal")
