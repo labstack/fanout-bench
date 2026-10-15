@@ -2,16 +2,128 @@ package bench
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestResourceSampleBackgroundMetrics(t *testing.T) {
+	const fixture = `process_cpu_seconds_total 12
+process_resident_memory_bytes 1024
+go_memstats_heap_alloc_bytes 512
+fanout_ingest_queue_depth 3
+fanout_parquet_files 4
+fanout_parquet_size_bytes 2048
+fanout_parquet_publish_waiters 2
+fanout_parquet_publish_timeouts_total 1
+fanout_rollup_component_duration_seconds_sum{rollup="service",signal="spans"} 1.25
+fanout_rollup_component_duration_seconds_sum{rollup="service",signal="logs"} 0.75
+fanout_rollup_component_duration_seconds_sum{rollup="edge"} 2.5
+fanout_rollup_component_duration_seconds_sum{rollup="version"} 3.5
+fanout_rollup_component_duration_seconds_sum{rollup="read_cache"} 4.5
+fanout_rollup_component_duration_seconds_count{rollup="service"} 100
+fanout_write_gate_hold_seconds_sum{operation="ingest",signal="spans"} 5
+fanout_write_gate_hold_seconds_sum{operation="ingest",signal="logs"} 0.5
+fanout_write_gate_hold_seconds_sum{operation="compaction"} 6.5
+fanout_write_gate_wait_seconds_sum{operation="ingest",signal="spans"} 7
+fanout_write_gate_wait_seconds_sum{operation="ingest",signal="logs"} 0.5
+fanout_write_gate_wait_seconds_sum{operation="compaction"} 8.5
+fanout_write_gate_wait_seconds_count{operation="ingest"} 100
+fanout_telemetry_operation_duration_seconds_sum{operation="compaction",signal="spans"} 9
+fanout_telemetry_operation_duration_seconds_sum{operation="compaction",signal="logs"} 0.5
+fanout_telemetry_operation_duration_seconds_sum{operation="ingest"} 100
+fanout_telemetry_operation_duration_seconds_count{operation="compaction",signal="spans"} 10
+fanout_telemetry_operation_duration_seconds_count{operation="compaction",signal="logs"} 2
+fanout_telemetry_operation_duration_seconds_count{operation="ingest"} 100
+fanout_parquet_publish_wait_seconds_sum{signal="spans"} 11
+fanout_parquet_publish_wait_seconds_sum{signal="logs"} 0.5
+fanout_ingest_backpressure_seconds_total 12.5
+fanout_compaction_backlog_batches 13
+`
+	snap, err := parsePrometheus(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resourceSample(snap, 1.23456)
+	want := ResourceSample{
+		AtSeconds: 1.235, CPUSeconds: 12, RSSBytes: 1024, HeapBytes: 512,
+		QueueDepth: 3, ParquetFiles: 4, ParquetBytes: 2048, PublishWaiters: 2, PublishTimeouts: 1,
+		RollupSeconds:                  map[string]float64{"service": 2, "edge": 2.5, "version": 3.5, "read_cache": 4.5},
+		WriteGateHoldSeconds:           map[string]float64{"ingest": 5.5, "compaction": 6.5},
+		WriteGateWaitSeconds:           map[string]float64{"ingest": 7.5, "compaction": 8.5},
+		CompactionSecondsTotal:         9.5,
+		CompactionsTotal:               12,
+		PublishWaitSecondsTotal:        11.5,
+		IngestBackpressureSecondsTotal: 12.5,
+		CompactionBacklogBatches:       13,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sample=%+v; want %+v", got, want)
+	}
+	// Check the public JSON names as well as the in-memory sample.
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"rollup_seconds":                    map[string]any{"service": float64(2), "edge": 2.5, "version": 3.5, "read_cache": 4.5},
+		"write_gate_hold_seconds":           map[string]any{"ingest": 5.5, "compaction": 6.5},
+		"write_gate_wait_seconds":           map[string]any{"ingest": 7.5, "compaction": 8.5},
+		"compaction_seconds_total":          9.5,
+		"compactions_total":                 float64(12),
+		"publish_wait_seconds_total":        11.5,
+		"ingest_backpressure_seconds_total": 12.5,
+		"compaction_backlog_batches":        float64(13),
+	} {
+		if !reflect.DeepEqual(fields[key], want) {
+			t.Errorf("JSON %s=%v; want %v", key, fields[key], want)
+		}
+	}
+}
+
+func TestResourceSampleWithoutBackgroundMetrics(t *testing.T) {
+	const fixture = `process_cpu_seconds_total 12
+process_resident_memory_bytes 1024
+go_memstats_heap_alloc_bytes 512
+fanout_ingest_queue_depth 3
+fanout_parquet_files 4
+fanout_parquet_size_bytes 2048
+fanout_parquet_publish_waiters 2
+fanout_parquet_publish_timeouts_total 1
+`
+	snap, err := parsePrometheus(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resourceSample(snap, 1.23456)
+	want := ResourceSample{
+		AtSeconds: 1.235, CPUSeconds: 12, RSSBytes: 1024, HeapBytes: 512,
+		QueueDepth: 3, ParquetFiles: 4, ParquetBytes: 2048, PublishWaiters: 2, PublishTimeouts: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy sample=%+v; want %+v", got, want)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantJSON = `{"at_seconds":1.235,"cpu_seconds":12,"rss_bytes":1024,"heap_bytes":512,"queue_depth":3,"parquet_files":4,"parquet_bytes":2048,"publish_waiters":2,"publish_timeouts_total":1}`
+	if string(data) != wantJSON {
+		t.Fatalf("legacy JSON=%s; want %s", data, wantJSON)
+	}
+}
 
 func TestRunPhaseStopsQueriesBeforeFinalGeneratorCPURead(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

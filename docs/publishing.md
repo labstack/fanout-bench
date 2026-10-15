@@ -10,7 +10,7 @@ A performance number is useful only when another engineer can explain and reprod
 - [ ] Fanout and generator Hetzner host descriptions, Fanout CPU model, architecture, logical CPU count, memory, OS, and generator placement;
 - [ ] transport, authentication path, batch size, topology, rate, duration, and repetitions;
 - [ ] average generator-host CPU cores and logical CPUs for each split trial, plus the selected sustained process count per signal;
-- [ ] raw `report.json`, `report.md`, and `samples.jsonl` from the same run;
+- [ ] raw `report.json`, `report.md`, and `samples.jsonl` from the same run, retaining the [background-work fields](metrics.md#background-work-samples) for rollups, write gates, compaction, publish waits, and ingest backpressure when available;
 - [ ] three publish-preset repetitions with Fanout alone on a fresh default `ccx33` VM and generators on a separate `ccx33`;
 - [ ] signal-specific peak results and a sustained mixed result;
 - [ ] a separate read-under-write result when claiming interactive performance;

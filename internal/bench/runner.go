@@ -404,8 +404,34 @@ func resourceSample(s *snapshot, at float64) ResourceSample {
 		RSSBytes: s.total("process_resident_memory_bytes", nil), HeapBytes: s.total("go_memstats_heap_alloc_bytes", nil),
 		QueueDepth: s.total("fanout_ingest_queue_depth", nil), ParquetFiles: s.total("fanout_parquet_files", nil),
 		ParquetBytes: s.total("fanout_parquet_size_bytes", nil), PublishWaiters: s.total("fanout_parquet_publish_waiters", nil),
-		PublishTimeouts: s.total("fanout_parquet_publish_timeouts_total", nil),
+		PublishTimeouts:                s.total("fanout_parquet_publish_timeouts_total", nil),
+		RollupSeconds:                  sampleTotalsByLabel(s, "fanout_rollup_component_duration_seconds_sum", "rollup"),
+		WriteGateHoldSeconds:           sampleTotalsByLabel(s, "fanout_write_gate_hold_seconds_sum", "operation"),
+		WriteGateWaitSeconds:           sampleTotalsByLabel(s, "fanout_write_gate_wait_seconds_sum", "operation"),
+		CompactionSecondsTotal:         s.total("fanout_telemetry_operation_duration_seconds_sum", map[string]string{"operation": "compaction"}),
+		CompactionsTotal:               s.total("fanout_telemetry_operation_duration_seconds_count", map[string]string{"operation": "compaction"}),
+		PublishWaitSecondsTotal:        s.total("fanout_parquet_publish_wait_seconds_sum", nil),
+		IngestBackpressureSecondsTotal: s.total("fanout_ingest_backpressure_seconds_total", nil),
+		CompactionBacklogBatches:       s.total("fanout_compaction_backlog_batches", nil),
 	}
+}
+
+func sampleTotalsByLabel(s *snapshot, name, label string) map[string]float64 {
+	var totals map[string]float64
+	if s == nil {
+		return nil
+	}
+	for _, sample := range s.samples {
+		key := sample.labels[label]
+		if sample.name != name || key == "" {
+			continue
+		}
+		if totals == nil {
+			totals = make(map[string]float64)
+		}
+		totals[key] += sample.value
+	}
+	return totals
 }
 
 func resourceDelta(before, after *snapshot, samples []ResourceSample, elapsed float64) Resources {

@@ -135,15 +135,23 @@ type Counts struct {
 func (c Counts) Total() float64 { return c.Spans + c.LogRecords + c.MetricPoints }
 
 type ResourceSample struct {
-	AtSeconds       float64 `json:"at_seconds"`
-	CPUSeconds      float64 `json:"cpu_seconds"`
-	RSSBytes        float64 `json:"rss_bytes"`
-	HeapBytes       float64 `json:"heap_bytes"`
-	QueueDepth      float64 `json:"queue_depth"`
-	ParquetFiles    float64 `json:"parquet_files"`
-	ParquetBytes    float64 `json:"parquet_bytes"`
-	PublishWaiters  float64 `json:"publish_waiters"`
-	PublishTimeouts float64 `json:"publish_timeouts_total"`
+	AtSeconds                      float64            `json:"at_seconds"`
+	CPUSeconds                     float64            `json:"cpu_seconds"`
+	RSSBytes                       float64            `json:"rss_bytes"`
+	HeapBytes                      float64            `json:"heap_bytes"`
+	QueueDepth                     float64            `json:"queue_depth"`
+	ParquetFiles                   float64            `json:"parquet_files"`
+	ParquetBytes                   float64            `json:"parquet_bytes"`
+	PublishWaiters                 float64            `json:"publish_waiters"`
+	PublishTimeouts                float64            `json:"publish_timeouts_total"`
+	RollupSeconds                  map[string]float64 `json:"rollup_seconds,omitempty"`
+	WriteGateHoldSeconds           map[string]float64 `json:"write_gate_hold_seconds,omitempty"`
+	WriteGateWaitSeconds           map[string]float64 `json:"write_gate_wait_seconds,omitempty"`
+	CompactionSecondsTotal         float64            `json:"compaction_seconds_total,omitempty"`
+	CompactionsTotal               float64            `json:"compactions_total,omitempty"`
+	PublishWaitSecondsTotal        float64            `json:"publish_wait_seconds_total,omitempty"`
+	IngestBackpressureSecondsTotal float64            `json:"ingest_backpressure_seconds_total,omitempty"`
+	CompactionBacklogBatches       float64            `json:"compaction_backlog_batches,omitempty"`
 }
 
 type Latency struct {
