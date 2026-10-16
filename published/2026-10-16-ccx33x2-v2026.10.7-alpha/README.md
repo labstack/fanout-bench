@@ -5,32 +5,29 @@ Fanout ran alone on a Hetzner Cloud ccx33 (8 dedicated AMD EPYC-Milan vCPUs,
 in the same location, sending plaintext OTLP/gRPC over a private network. The
 run used the publish preset with three repetitions: sweeps of 1 to 64
 telemetrygen processes per signal, 8 workers per process, 1,000-item batches,
-then five minutes of mixed load at 32 processes per signal. It was ingest only;
-no dashboard queries ran.
+then five minutes of mixed load at 32 processes per signal. Ingest only.
 
 Every evidence gate passed: all generator processes exited successfully,
 Fanout dropped no rows and did not restart, and `fanout repair verify`
 validated the Parquet store.
 
-| Result | Accepted items/s |
+| Sustained mixed, five minutes | Accepted/s |
 |---|---:|
-| Mixed, five minutes sustained | 422,408 |
-| Spans within that mix | 51,358 |
-| Log records within that mix | 184,883 |
-| Metric points within that mix | 186,178 |
+| Total items | 422,408 |
+| Spans | 51,358 |
+| Log records | 184,883 |
+| Metric points | 186,178 |
+
+Fanout averaged 7.33 cores, with a peak RSS of 13.5 GiB. The generator host averaged 7.01 of 8 cores.
 
 Median peaks across the three repetitions:
 
-| Workload | Median peak | Processes per signal | Range across repetitions |
-|---|---:|---:|---:|
-| Mixed | 429,749 | 32 | 429,504–471,506 |
-| Traces (spans) | 243,696 | 64 | 225,110–267,916 |
-| Logs (records) | 342,494 | 64 | 299,902–347,721 |
-| Metrics (data points) | 540,102 | 64 | 293,700–543,941 |
-
-At 32 and 64 mixed processes per signal the generator host averaged 7.0-7.5
-of its 8 cores. Those points, and the sustained phase at 7.0 cores, are
-limited by the generator as much as by Fanout.
+| Workload | Median peak | Processes per signal | Range | Generator CPU (median) |
+|---|---:|---:|---:|---:|
+| Mixed | 429,749 | 32 | 429,504–471,506 | 7.02 / 8 |
+| Traces (spans) | 243,696 | 64 | 225,110–267,916 | 6.83 / 8 |
+| Logs (records) | 342,494 | 64 | 299,902–347,721 | 3.46 / 8 |
+| Metrics (data points) | 540,102 | 64 | 293,700–543,941 | 4.64 / 8 |
 
 | File | Contents |
 |---|---|
