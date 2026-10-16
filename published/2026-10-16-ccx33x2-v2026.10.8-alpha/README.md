@@ -1,4 +1,4 @@
-# Fanout v2026.10.7-alpha on two Hetzner ccx33s
+# Fanout v2026.10.8-alpha on two Hetzner ccx33s
 
 Fanout ran alone on a Hetzner Cloud ccx33 (8 dedicated AMD EPYC-Milan vCPUs,
 32 GB RAM, fsn1, Ubuntu 24.04). telemetrygen v0.157.0 ran on a separate ccx33
@@ -13,21 +13,24 @@ validated the Parquet store.
 
 | Sustained mixed, five minutes | Accepted/s |
 |---|---:|
-| Total items | 422,408 |
-| Spans | 51,358 |
-| Log records | 184,883 |
-| Metric points | 186,178 |
+| Total items | 415,859 |
+| Spans | 57,037 |
+| Log records | 179,134 |
+| Metric points | 179,688 |
 
-Fanout averaged 7.33 cores, with a peak RSS of 13.5 GiB. The generator host averaged 7.01 of 8 cores.
+Fanout averaged 7.24 cores, with a peak RSS of 11.4 GiB. The generator host averaged 7.44 of 8 cores.
+
+Rates are rounded to whole items/s. The sustained composition uses the same
+counter-scrape interval as total accepted throughput.
 
 Median peaks across the three repetitions:
 
 | Workload | Median peak | Processes per signal | Range | Generator CPU (median) |
 |---|---:|---:|---:|---:|
-| Mixed | 429,749 | 32 | 429,504–471,506 | 7.02 / 8 |
-| Traces (spans) | 243,696 | 64 | 225,110–267,916 | 6.83 / 8 |
-| Logs (records) | 342,494 | 64 | 299,902–347,721 | 3.46 / 8 |
-| Metrics (data points) | 540,102 | 64 | 293,700–543,941 | 4.64 / 8 |
+| Mixed | 402,062 | 32 | 357,956–433,339 | 7.34 / 8 |
+| Traces (spans) | 248,901 | 32 | 207,920–295,566 | 5.19 / 8 |
+| Logs (records) | 387,579 | 64 | 353,862–393,976 | 4.63 / 8 |
+| Metrics (data points) | 524,878 | 64 | 472,496–561,000 | 5.31 / 8 |
 
 | File | Contents |
 |---|---|
@@ -38,14 +41,14 @@ Median peaks across the three repetitions:
 | `fanout.log` | Fanout's log for the run |
 | `fanout-repair.txt` | `fanout repair verify` output |
 
-- **Release:** `fanout_v2026.10.7-alpha_linux_amd64.tar.gz`, SHA-256
-  `d1b602130463b38a03f7575c52c1c2178213839dbf276294abd57ce662c8756b`.
-- **Harness:** commit `8a2a28aafa828fc7967ba82a481c7cdb5c7e921e`, clean.
+- **Release:** `fanout_v2026.10.8-alpha_linux_amd64.tar.gz`, SHA-256
+  `b314920221693683b7d6ff42787a37e82bee1fbdd7ddcc8647d1905f7629ac6b`.
+- **Harness:** commit `8f5864ba488d9802f68250d85f67b6658ab13af5`, clean.
 
 Reproduce:
 
 ```sh
 FANOUT_BENCH_HCLOUD_SSH_KEY='<key>' scripts/hetzner.sh \
-  --fanout-version v2026.10.7-alpha --preset publish --repeat 3 \
-  --output results/publish-v2026.10.7-alpha
+  --fanout-version v2026.10.8-alpha --preset publish --repeat 3 \
+  --output results/publish-v2026.10.8-alpha
 ```
