@@ -1,0 +1,1 @@
+all authoritative telemetry batches passed validation
