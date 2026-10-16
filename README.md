@@ -2,6 +2,8 @@
 
 Reproducible OpenTelemetry performance evidence for [Fanout](https://github.com/labstack/fanout).
 
+Published evidence: [Fanout v2026.10.8-alpha on two Hetzner ccx33s](published/2026-10-16-ccx33x2-v2026.10.8-alpha/README.md).
+
 Fanout Bench drives the official OpenTelemetry `telemetrygen` client, measures what Fanout actually accepts, samples the server throughout the run, and emits publication-ready JSON and Markdown. It is deliberately harder to fool than a one-line requests-per-second script.
 
 ## What the headline means
