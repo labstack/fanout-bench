@@ -405,6 +405,7 @@ func resourceSample(s *snapshot, at float64) ResourceSample {
 		QueueDepth: s.total("fanout_ingest_queue_depth", nil), ParquetFiles: s.total("fanout_parquet_files", nil),
 		ParquetBytes: s.total("fanout_parquet_size_bytes", nil), PublishWaiters: s.total("fanout_parquet_publish_waiters", nil),
 		PublishTimeouts:                s.total("fanout_parquet_publish_timeouts_total", nil),
+		IngestRowsTotal:                sampleTotalsByLabel(s, "fanout_ingest_rows_total", "signal"),
 		RollupSeconds:                  sampleTotalsByLabel(s, "fanout_rollup_component_duration_seconds_sum", "rollup"),
 		WriteGateHoldSeconds:           sampleTotalsByLabel(s, "fanout_write_gate_hold_seconds_sum", "operation"),
 		WriteGateWaitSeconds:           sampleTotalsByLabel(s, "fanout_write_gate_wait_seconds_sum", "operation"),

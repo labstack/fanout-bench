@@ -144,6 +144,7 @@ type ResourceSample struct {
 	ParquetBytes                   float64            `json:"parquet_bytes"`
 	PublishWaiters                 float64            `json:"publish_waiters"`
 	PublishTimeouts                float64            `json:"publish_timeouts_total"`
+	IngestRowsTotal                map[string]float64 `json:"ingest_rows_total,omitempty"`
 	RollupSeconds                  map[string]float64 `json:"rollup_seconds,omitempty"`
 	WriteGateHoldSeconds           map[string]float64 `json:"write_gate_hold_seconds,omitempty"`
 	WriteGateWaitSeconds           map[string]float64 `json:"write_gate_wait_seconds,omitempty"`
