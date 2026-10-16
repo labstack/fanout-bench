@@ -15,6 +15,61 @@ import (
 	"time"
 )
 
+func TestResourceSampleIngestRowsTotal(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		fixture string
+		want    map[string]float64
+	}{
+		{
+			name: "present",
+			fixture: `fanout_ingest_rows_total{signal="spans",transport="grpc"} 123
+fanout_ingest_rows_total{signal="spans",transport="http"} 7
+fanout_ingest_rows_total{signal="logs"} 45
+fanout_ingest_rows_total{signal="metrics"} 0
+process_cpu_seconds_total 12
+`,
+			want: map[string]float64{"spans": 130, "logs": 45, "metrics": 0},
+		},
+		{
+			name:    "absent",
+			fixture: "process_cpu_seconds_total 12\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snap, err := parsePrometheus(strings.NewReader(tt.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := resourceSample(snap, 1)
+			if !reflect.DeepEqual(got.IngestRowsTotal, tt.want) {
+				t.Fatalf("ingest rows=%v; want %v", got.IngestRowsTotal, tt.want)
+			}
+			data, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil {
+				t.Fatal(err)
+			}
+			raw, present := fields["ingest_rows_total"]
+			if present != (tt.want != nil) {
+				t.Fatalf("JSON ingest_rows_total present=%t; want %t", present, tt.want != nil)
+			}
+			if present {
+				var decoded map[string]float64
+				if err := json.Unmarshal(raw, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(decoded, tt.want) {
+					t.Fatalf("JSON ingest rows=%v; want %v", decoded, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestResourceSampleBackgroundMetrics(t *testing.T) {
 	const fixture = `process_cpu_seconds_total 12
 process_resident_memory_bytes 1024

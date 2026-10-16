@@ -38,6 +38,7 @@ Each `samples.jsonl` row also records the following `/metrics` values. The same 
 
 | Sample field | Source |
 |---|---|
+| `ingest_rows_total` | `fanout_ingest_rows_total`, keyed by `signal` (`spans`, `logs`, `metrics`) |
 | `rollup_seconds` | `fanout_rollup_component_duration_seconds_sum`, keyed by `rollup` (`service`, `edge`, `version`, `read_cache`) |
 | `write_gate_hold_seconds` | `fanout_write_gate_hold_seconds_sum`, keyed by `operation` |
 | `write_gate_wait_seconds` | `fanout_write_gate_wait_seconds_sum`, keyed by `operation` |
@@ -47,7 +48,7 @@ Each `samples.jsonl` row also records the following `/metrics` values. The same 
 | `ingest_backpressure_seconds_total` | `fanout_ingest_backpressure_seconds_total` |
 | `compaction_backlog_batches` | `fanout_compaction_backlog_batches` |
 
-Durations and counts are cumulative values at scrape time, not phase deltas. Subtract adjacent samples to attribute work during an interval, accounting for process restarts. `compaction_backlog_batches` is a current gauge rather than a cumulative counter. Series with additional labels are summed, retaining the indicated map key for rollups and write gates. Older Fanout releases may omit these metrics; absent maps and zero scalar values are omitted from JSON, and missing metrics do not fail a run. These samples provide attribution evidence without changing headline tables or quality gates.
+Durations and counts are cumulative values at scrape time, not phase deltas. Subtract adjacent samples to attribute work during an interval, accounting for process restarts. For per-second accepted-row rates, divide each signal's `ingest_rows_total` delta by the difference in `at_seconds` between consecutive samples. `compaction_backlog_batches` is a current gauge rather than a cumulative counter. Series with additional labels are summed, retaining the indicated map key for ingest signals, rollups, and write gates. Older Fanout releases may omit these metrics; absent maps and zero scalar values are omitted from JSON, and missing metrics do not fail a run. These samples provide attribution evidence without changing headline tables or quality gates.
 
 ## Generator resources
 

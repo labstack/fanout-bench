@@ -129,12 +129,12 @@ Every run produces one self-contained directory:
 results/20261014T190000Z/
 ├── report.json     authoritative schema-versioned result
 ├── report.md       readable, publication-ready report
-├── samples.jsonl   per-second Fanout resource and background-work samples
+├── samples.jsonl   per-second Fanout ingest, resource, and background-work samples
 ├── fanout-repair.txt  post-run authoritative-storage verification
 └── fanout.log      setup-token-scrubbed server log
 ```
 
-`samples.jsonl` includes cumulative `rollup_seconds` by rollup (`service`, `edge`, `version`, `read_cache`), `write_gate_hold_seconds` and `write_gate_wait_seconds` by operation, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, and `ingest_backpressure_seconds_total`, plus the current `compaction_backlog_batches` gauge. Missing metrics from older Fanout releases leave these fields absent or zero. See [sample definitions](docs/metrics.md#background-work-samples) for their sources and interpretation.
+`samples.jsonl` includes cumulative `ingest_rows_total` by signal (`spans`, `logs`, `metrics`), `rollup_seconds` by rollup (`service`, `edge`, `version`, `read_cache`), `write_gate_hold_seconds` and `write_gate_wait_seconds` by operation, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, and `ingest_backpressure_seconds_total`, plus the current `compaction_backlog_batches` gauge. Derive per-second accepted-row rates from consecutive samples' `ingest_rows_total` deltas divided by their `at_seconds` difference. Missing metrics from older Fanout releases leave these fields absent or zero. See [sample definitions](docs/metrics.md#background-work-samples) for their sources and interpretation.
 
 The terminal output is optimized for decisions:
 
@@ -186,7 +186,7 @@ For every phase the report includes:
 - generator process count/failures and Fanout dropped-row/restart checks;
 - average Fanout CPU cores, peak/end RSS, peak/end Go heap, allocations, GC pause;
 - peak ingest queue depth, Parquet file count/bytes, and optional local data-directory growth;
-- a raw time series in `samples.jsonl` for independent charting, including rollup durations, write-gate hold/wait durations, compaction duration/count/backlog, publish wait duration, and ingest backpressure duration;
+- a raw time series in `samples.jsonl` for independent charting, including accepted rows by signal, rollup durations, write-gate hold/wait durations, compaction duration/count/backlog, publish wait duration, and ingest backpressure duration;
 - attempted/completed read rate, latency, failures, scheduler shedding, and phase-end cancellations when query load is enabled.
 
 See [docs/metrics.md](docs/metrics.md) for definitions and [docs/publishing.md](docs/publishing.md) for the public-results checklist.
