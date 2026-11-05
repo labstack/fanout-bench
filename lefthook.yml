@@ -1,0 +1,11 @@
+# Secrets, private AI session links and local paths, by .gitleaks.toml.
+# Install with `lefthook install`; CI runs the same rules.
+pre-commit:
+  jobs:
+    - name: leaks
+      run: gitleaks git --pre-commit --staged --redact --no-banner
+
+commit-msg:
+  jobs:
+    - name: leaks
+      run: gitleaks stdin --redact --no-banner < {1}
