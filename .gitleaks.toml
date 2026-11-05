@@ -1,0 +1,17 @@
+# Secret and privacy rules for this public repository: gitleaks's default
+# secret rules plus links and paths that must never be published. Add a rule
+# here to extend every check (lefthook and CI read this file).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "private-ai-session-link"
+description = "Private AI session link or session trailer"
+regex = '''(?i)(claude\.ai/(code|chat|share|project)/|Claude-Session:|chatgpt\.com/(c|share|codex)/)'''
+keywords = ["claude", "chatgpt"]
+
+[[rules]]
+id = "local-workstation-path"
+description = "Local workstation home directory path"
+regex = '''(/Users|/home)/[A-Za-z0-9_.-]+/'''
+keywords = ["/users/", "/home/"]
