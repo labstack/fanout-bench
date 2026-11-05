@@ -79,6 +79,8 @@ The public SSH targets are used by your local machine for provisioning. The two 
 
 `managed` remains the sole orchestrator on the Fanout host: it binds Fanout to the supplied private IP on a free port, performs setup, samples metrics, issues read load, verifies storage, and writes the report. Every telemetrygen process runs through SSH on the generator host, bounded by a remote timeout. Cleanup removes the marked authorized-key line, the private key, and both stages. Reports record both host descriptions and `generator_on_target_host: false`; reproduction commands redact both public targets and omit the private IP flags.
 
+To measure an unreleased build, pass `--fanout-binary <path>` with a local Linux Fanout binary for the remote architecture and a non-release label such as `--fanout-version explore-fdfbf7f5`. The binary is identified by its SHA-256 as `unreleased-local-binary`, and the report warns that the run is diagnostic and must not be published.
+
 Nothing is installed system-wide. Existing Fanout services and data directories are not touched. Neither remote host needs a Go toolchain or Docker daemon, and Fanout needs no preconfigured account. The Fanout host needs an SSH client; the generator host needs an SSH server and GNU `timeout` (included in the default Ubuntu image).
 
 > `telemetrygen` currently accepts OTLP headers through a command-line flag and prints those headers in its startup configuration. Fanout Bench suppresses and redacts child output, but the short-lived ingest token can still be visible to local process-listing tools while a generator is running. Use a dedicated token and revoke it after the run.
@@ -89,7 +91,9 @@ Nothing is installed system-wide. Existing Fanout services and data directories 
 |---|---|---:|---:|---|
 | `quick` | 1 topology per signal and mixed | 5s | 10s | installation smoke test |
 | `standard` | 1, 2, 4, 8 processes per signal | 15s | 60s | engineering comparison |
+| `validate` | up to 1, 2, 4, 8, 16, 32, 64 processes per signal; stops on plateau/collapse | 30s | 5m | faster validation; full quality gates |
 | `publish` | 1, 2, 4, 8, 16, 32, 64 processes per signal | 30s | 5m | repeatable public evidence |
+| `local` | 8, 16, 32 processes per signal | 30s | 5m | same-host A/B check before a Hetzner run |
 
 The default topology is 8 workers per process at 2,500 items/s per worker with 1,000-item OTLP batches. A mixed step launches the same topology independently for traces, logs, and metrics. Without read load, the sustained proof reruns the mixed topology with the highest **accepted** throughput. With `--query-rate`, it chooses the highest-throughput topology that also completed at least 95% of the requested reads with no errors or scheduler shedding. If no sweep point qualifies, it repeats the best read-completion point and fails the sustained-read quality gate rather than publishing a write-only peak as mixed capacity. Both reports record the selected sustained process count per signal. The wider publish sweep adds independent exporters to get past telemetrygen's per-process limits; see [the source analysis](docs/telemetrygen.md).
 
@@ -108,6 +112,28 @@ scripts/hetzner.sh \
 
 Publication runs measure Fanout’s ingest ceiling with all eight ccx33 vCPUs available to Fanout; telemetrygen runs on the separate ccx33 over the private network. A plain `--host` run without the three split flags remains a same-host run, and its report warns about generator contention.
 
+## Faster Hetzner validation
+
+Run ingest and both read groups concurrently on three separate VM pairs:
+
+```sh
+scripts/hetzner.sh --parallel-groups \
+  --fanout-version v2026.10.1-alpha --preset validate --repeat 3 \
+  --output results/validate-ingest \
+  -- \
+  --fanout-version v2026.10.1-alpha --preset validate --repeat 1 \
+  --signals mixed --query-rate 20 --rate 210 \
+  --output results/validate-reads-70 \
+  -- \
+  --fanout-version v2026.10.1-alpha --preset validate --repeat 1 \
+  --signals mixed --query-rate 20 \
+  --output results/validate-reads-saturated
+```
+
+Set the Hetzner SSH-key environment variable as in Quick start. Expect **about two hours instead of four**, bounded by the longest group's setup, load, verification and download; early stopping may save more. At peak this uses six VMs. With two started hours for ingest and one for each read pair, budget **8 ccx33 VM-hours**, plus public IPv4 charges and tax—about the previous four-hour pair's VM cost. If both read pairs cross an hour boundary, budget 12 VM-hours. Check current location rates. Each pair is deleted when its group finishes, including failure and Ctrl-C paths; resource names are printed and failed deletion exits nonzero.
+
+`--signals mixed` skips duplicate single-signal sweeps and labels them skipped in reports. `validate` keeps publish's durations and maximum topology, but stops a signal/repetition after two gains below 5% or a collapsing acceptance ratio; reports record the stop and skipped phases. It keeps the sustained proof and quality gates. `publish` remains a full sweep with early stopping disabled. The `210` rate is per worker and must be recalibrated for a different target's approximate 70% load. See the [validation recipe and cost assumptions](docs/publishing.md#faster-validation-runs); validation does not replace publication evidence.
+
 ## Read and write together
 
 The write-only suite answers “how quickly can Fanout ingest?” It does not answer “what happens to dashboard latency while ingesting?” Add automatically authenticated read load to mixed phases:
@@ -119,9 +145,17 @@ scripts/hetzner.sh \
   --query-rate 50
 ```
 
-The harness uses a bounded open-loop scheduler targeting user operations per second at 15-minute, 1-hour, 6-hour, 12-hour, and 24-hour windows. Operations rotate through dashboard refresh, service-map trace drill-down, and trace detail. A refresh sends the full System overview panel batch exactly as the UI's initial all-visible load does, then requests annotations over the returned time-panel bounds. Layout widths model a fixed 1664-pixel viewport and are rounded as in the UI. Drill-down uses `POST /api/panels/exemplars` with the selected service and the panel response's absolute window. Trace detail uses `GET /api/traces/:id` with a discovered ID, namespace, and that same window, retained separately for each range; an empty detail is a failure. Until a trace is discovered, detail slots perform drill-down; until a selectable panel is cached, those slots perform dashboard refresh instead. Each slot performs one user operation. The current System overview has no log drill or standalone log/trace search operation. Each scheduled read measures every request in its operation, and any request or panel error fails the operation. The report records per-operation counts and latency in its methodology alongside the dashboard definition hash; aggregate fields and quality gates retain their schema.
+The harness targets only the current Fanout API: `POST /api/queries/run`, `POST /api/queries/exemplars`, and `POST /api/annotations/query`. It uses a bounded open-loop scheduler targeting user operations per second at 15-minute, 1-hour, 6-hour, 12-hour, and 24-hour windows. Operations rotate through dashboard refresh, service-map trace drill-down, and trace detail. A refresh sends the full System overview panel batch exactly as the UI's initial all-visible load does, then requests annotations over the returned time-panel bounds. Layout widths model a fixed 1664-pixel viewport and are rounded as in the UI. Drill-down uses `POST /api/queries/exemplars` with the selected service and the panel response's absolute window. Trace detail uses `GET /api/traces/:id` with a discovered ID, namespace, and that same window, retained separately for each range; an empty detail is a failure. Until a trace is discovered, detail slots perform drill-down; until a selectable panel is cached, those slots perform dashboard refresh instead. Each slot performs one user operation. The current System overview has no log drill or standalone log/trace search operation. Each scheduled read measures every request in its operation, and any request or panel error fails the operation. The report records per-operation counts and latency in its methodology alongside the dashboard definition hash; aggregate fields and quality gates retain their schema.
 
 It reports attempted and completed rates, phase-end cancellations, explicit scheduler shedding, failures, mean, p50, p95, p99, and maximum latency. The concurrency bound prevents a stalled server from creating unbounded requests.
+
+Each phase also reports a **Dashboard panels** table with per-panel outcome
+counts, cache-hit percentage, and server-duration p50/p95/p99, including failed
+refreshes. Sustained-phase failure contributors are flagged. Structured panel
+evidence, including freshness bounds, appears in `trials[].dashboard_panels`;
+server execution and admission metrics appear in `samples.jsonl` under
+`panel_metrics` when the server exposes them. See the
+[panel evidence definitions](docs/metrics.md#dashboard-panel-evidence).
 
 ## Output
 
@@ -136,7 +170,7 @@ results/20261014T190000Z/
 └── fanout.log      setup-token-scrubbed server log
 ```
 
-`samples.jsonl` includes cumulative `ingest_rows_total` by signal (`spans`, `logs`, `metrics`), `rollup_seconds` by rollup (`service`, `edge`, `version`, `read_cache`), `write_gate_hold_seconds` and `write_gate_wait_seconds` by operation, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, and `ingest_backpressure_seconds_total`, plus the current `compaction_backlog_batches` gauge. Derive per-second accepted-row rates from consecutive samples' `ingest_rows_total` deltas divided by their `at_seconds` difference. Missing metrics from older Fanout releases leave these fields absent or zero. See [sample definitions](docs/metrics.md#background-work-samples) for their sources and interpretation.
+`samples.jsonl` includes cumulative `ingest_rows_total` by signal (`spans`, `logs`, `metrics`), `rollup_seconds` by rollup (`service`, `edge`, `version`, `read_cache`), `write_gate_hold_seconds` and `write_gate_wait_seconds` by operation, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, `ingest_backpressure_seconds_total`, `ingest_throttled_total` by reason, `ingest_admission_rows_per_second`, `compaction_retired_batches_total`, and `compaction_pass_seconds_total`, plus the current `compaction_backlog_batches` gauge. Derive per-second accepted-row rates from consecutive samples' `ingest_rows_total` deltas divided by their `at_seconds` difference. Missing metrics leave these fields absent or zero. See [sample definitions](docs/metrics.md#background-work-samples) for their sources and interpretation.
 
 The terminal output is optimized for decisions:
 
@@ -211,6 +245,8 @@ Presets make comparisons easy. Overrides are intended for diagnostics and ceilin
 ```text
 3 signals × processes-per-signal × workers-per-process × rate-per-worker
 ```
+
+Retryable throttling is valid when telemetrygen retries and exits successfully. Accepted throughput still comes only from Fanout counters. Any nonzero generator exit, including exhaustion of its export retry timeout, invalidates the phase and fails the generator-processes gate; throttling never excuses exporter death.
 
 Avoid unbounded telemetrygen runs. Its SDK queues may drop locally while the console continues to count generated data. Fanout Bench always uses bounded rates and treats Fanout's accepted counter as authoritative.
 

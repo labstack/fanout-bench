@@ -17,7 +17,12 @@ import (
 
 // maxQueryBody bounds a single response. Oversized responses fail because
 // their panel errors and discovered trace contents cannot be validated.
-const maxQueryBody = 32 << 20
+const (
+	maxQueryBody         = 32 << 20
+	queryRunPath         = "/api/queries/run"
+	queryExemplarsPath   = "/api/queries/exemplars"
+	queryAnnotationsPath = "/api/annotations/query"
+)
 
 type queryRun struct {
 	targets    []queryTarget
@@ -26,6 +31,8 @@ type queryRun struct {
 	selections map[string]drillSelection
 	kindsMu    sync.Mutex
 	kinds      map[string]*operationStats
+	panelsMu   sync.Mutex
+	panels     map[string]*panelStats
 	wg         sync.WaitGroup
 	hist       *histogram
 	failures   int64
@@ -43,7 +50,7 @@ type operationStats struct {
 }
 
 func newQueryRun() *queryRun {
-	return &queryRun{targets: []queryTarget{{name: "dashboard-refresh", body: []byte(`{}`)}}, traces: map[string]traceReference{}, selections: map[string]drillSelection{}, kinds: map[string]*operationStats{}, hist: newHistogram(), stop: make(chan struct{}), cancel: func() {}}
+	return &queryRun{targets: []queryTarget{{name: "dashboard-refresh", body: []byte(`{}`)}}, traces: map[string]traceReference{}, selections: map[string]drillSelection{}, kinds: map[string]*operationStats{}, panels: map[string]*panelStats{}, hist: newHistogram(), stop: make(chan struct{}), cancel: func() {}}
 }
 
 func (q *queryRun) start(ctx context.Context, client *http.Client, base, cookie string, rate float64) {
@@ -136,15 +143,13 @@ func (q *queryRun) request(ctx context.Context, client *http.Client, base, cooki
 		}
 	}()
 	refresh := func() bool {
-		body, ok := queryHTTP(ctx, client, base, cookie, http.MethodPost, "/api/panels/query", query.body)
-		if !ok {
-			return false
-		}
-		annotations, valid := q.panelResponse(body, query)
+		body, ok, absent := queryPanelHTTP(ctx, client, base, cookie, queryRunPath, query.body)
+		annotations, valid := q.recordPanelResponse(body, query, absent, ctx.Err() == nil)
 		// refresh.ts requests annotations after the panel batch, even if a
 		// panel reports an error. Count the whole operation as failed either way.
 		if annotations != nil {
-			_, ok = queryHTTP(ctx, client, base, cookie, http.MethodPost, "/api/annotations", annotations)
+			_, annotationsOK := queryHTTP(ctx, client, base, cookie, http.MethodPost, queryAnnotationsPath, annotations)
+			ok = ok && annotationsOK
 		}
 		return valid && ok
 	}
@@ -173,7 +178,7 @@ func (q *queryRun) request(ctx context.Context, client *http.Client, base, cooki
 		success = refresh()
 		return
 	}
-	body, ok := queryHTTP(ctx, client, base, cookie, http.MethodPost, "/api/panels/exemplars", exemplarBody(query, selection))
+	body, ok := queryHTTP(ctx, client, base, cookie, http.MethodPost, queryExemplarsPath, exemplarBody(query, selection))
 	success = ok && q.exemplarResponse(body, query, selection)
 }
 
@@ -228,44 +233,51 @@ func (q *queryRun) operationSummary(phase string) string {
 	return b.String()
 }
 
+// Logarithmic fixed buckets bound memory independently of run length. Quantiles
+// use bucket upper bounds (within 1% or 0.01ms), clamped to the observed maximum.
 type histogram struct {
-	mu     sync.Mutex
-	values []float64
-	sum    float64
-	max    float64
+	mu       sync.Mutex
+	buckets  [2048]int64
+	count    int64
+	sum, max float64
 }
 
 func newHistogram() *histogram { return &histogram{} }
 
-func (h *histogram) record(d time.Duration) {
-	ms := float64(d) / float64(time.Millisecond)
-	h.mu.Lock()
-	h.values = append(h.values, ms)
-	h.sum += ms
-	if ms > h.max {
-		h.max = ms
+func (h *histogram) record(d time.Duration) { h.recordMS(float64(d) / float64(time.Millisecond)) }
+
+func (h *histogram) recordMS(ms float64) {
+	if ms < 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
+		return
 	}
-	h.mu.Unlock()
+	index := min(len(h.buckets)-1, int(math.Ceil(math.Log1p(ms)/math.Log(1.01))))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.buckets[index]++
+	h.count++
+	h.sum += ms
+	h.max = max(h.max, ms)
 }
 
 func (h *histogram) snapshot() Latency {
 	h.mu.Lock()
-	values := append([]float64(nil), h.values...)
-	sum, max := h.sum, h.max
-	h.mu.Unlock()
-	if len(values) == 0 {
+	defer h.mu.Unlock()
+	if h.count == 0 {
 		return Latency{}
 	}
-	sort.Float64s(values)
 	quantile := func(q float64) float64 {
-		index := int(math.Ceil(q*float64(len(values)))) - 1
-		if index < 0 {
-			index = 0
+		target := int64(math.Ceil(q * float64(h.count)))
+		var count int64
+		for i, n := range h.buckets {
+			count += n
+			if count >= target {
+				if i == len(h.buckets)-1 {
+					return round(h.max, 2)
+				}
+				return round(min(h.max, math.Expm1(float64(i)*math.Log(1.01))), 2)
+			}
 		}
-		if index >= len(values) {
-			index = len(values) - 1
-		}
-		return round(values[index], 2)
+		return round(h.max, 2)
 	}
-	return Latency{Count: int64(len(values)), MeanMs: round(sum/float64(len(values)), 2), P50Ms: quantile(.5), P95Ms: quantile(.95), P99Ms: quantile(.99), MaxMs: round(max, 2)}
+	return Latency{Count: h.count, MeanMs: round(h.sum/float64(h.count), 2), P50Ms: quantile(.5), P95Ms: quantile(.95), P99Ms: quantile(.99), MaxMs: round(h.max, 2)}
 }

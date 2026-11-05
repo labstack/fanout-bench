@@ -97,7 +97,7 @@ func systemQueryTargets(spec json.RawMessage) ([]queryTarget, string, error) {
 	if err := json.Unmarshal(spec, &dashboard); err != nil {
 		return nil, "", err
 	}
-	if dashboard.Name != "System overview" || len(dashboard.Panels) == 0 {
+	if dashboard.Name != "System overview" || len(dashboard.Panels) == 0 || len(dashboard.Panels) > maxPanelIDs {
 		return nil, "", errors.New("invalid System overview spec")
 	}
 	ids := []string{}
@@ -106,6 +106,12 @@ func systemQueryTargets(spec json.RawMessage) ([]queryTarget, string, error) {
 	drills := map[string]string{}
 	var drillIDs []string
 	for _, p := range dashboard.Panels {
+		if p.ID == "" || len(p.ID) > 128 || p.ID == otherPanelID {
+			return nil, "", errors.New("invalid dashboard panel ID")
+		}
+		if _, exists := widths[p.ID]; exists {
+			return nil, "", errors.New("duplicate dashboard panel ID")
+		}
 		ids = append(ids, p.ID)
 		width := p.Width
 		if width == 0 {
@@ -185,12 +191,16 @@ func exemplarBody(query queryTarget, selection drillSelection) []byte {
 func uiTime(ms int64) string { return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z") }
 
 type panelResult struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Error  string `json:"error"`
-	From   *int64 `json:"from_ms"`
-	To     *int64 `json:"to_ms"`
-	Frame  *struct {
+	ID        string   `json:"id"`
+	Reason    string   `json:"reason"`
+	ElapsedMS *float64 `json:"elapsed_ms"`
+	Cached    bool     `json:"cached"`
+	FreshToMS *int64   `json:"fresh_to_ms"`
+	Status    string   `json:"status"`
+	Error     string   `json:"error"`
+	From      *int64   `json:"from_ms"`
+	To        *int64   `json:"to_ms"`
+	Frame     *struct {
 		Columns []struct {
 			Name string `json:"name"`
 		} `json:"columns"`
@@ -199,16 +209,33 @@ type panelResult struct {
 }
 
 func (q *queryRun) panelResponse(body []byte, query queryTarget) ([]byte, bool) {
-	var response struct {
-		Results []panelResult `json:"results"`
+	return q.recordPanelResponse(body, query, "missing", true)
+}
+
+func (q *queryRun) recordPanelResponse(body []byte, query queryTarget, absent string, attributeFailures bool) ([]byte, bool) {
+	results, parsed := decodePanelResults(body)
+	// Keep one outcome per panel per refresh. Duplicate IDs invalidate the panel.
+	unique := make(map[string]panelResult)
+	duplicates := make(map[string]bool)
+	for _, result := range results {
+		if _, exists := unique[result.ID]; exists {
+			duplicates[result.ID] = true
+			continue
+		}
+		unique[result.ID] = result
 	}
-	if json.Unmarshal(body, &response) != nil || len(response.Results) == 0 {
-		return nil, false
+	for id, result := range unique {
+		if duplicates[id] {
+			result.Status, result.Error, result.Reason = "error", "duplicate panel result", ""
+		}
+		result.Status = panelStatus(result)
+		unique[id] = result
 	}
+	q.recordPanels(query, unique, absent, attributeFailures)
 	seen := map[string]bool{}
-	valid := true
+	valid := parsed && len(results) > 0
 	var from, to int64
-	for _, result := range response.Results {
+	for _, result := range unique {
 		if seen[result.ID] || (result.Status != "ok" && result.Status != "empty") || result.Error != "" {
 			valid = false
 		}

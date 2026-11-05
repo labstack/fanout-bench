@@ -68,20 +68,30 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 	}
 	report.Host.Description = r.Config.HostDescription
 	report.Host.GeneratorDescription = r.Config.GeneratorHostDescription
+	if r.Config.SignalSelection == "mixed" {
+		report.Settings.Methodology += " Single-signal traces, logs, and metrics sweeps were skipped (--signals mixed); mixed warmup, mixed sweep and mixed sustained remain. Single-signal peaks were not measured."
+	}
+	if r.Config.Preset == "validate" {
+		report.Settings.Methodology += " Validation sweep early stop is enabled: two consecutive accepted-throughput gains below 5%, or acceptance ratio below 50% and below half the previous point. This is validation evidence, not a full publication sweep."
+	}
 	report.Settings.Methodology += readMethod
 	report.WorkloadSHA256 = workloadHash(report.Settings, plan)
 	report.ReproductionCommand = reproductionCommand(r.Config)
 	printRunHeader(r.Out, report, plan)
 
+	skipped := make(map[string]bool)
 	for i := range plan {
 		if err := ctx.Err(); err != nil {
 			return r.abandon(report, err)
 		}
 		spec := plan[i]
+		if skipped[spec.Name] {
+			continue
+		}
 		if spec.Kind == "sustained" && spec.ProcessesPerSignal == 0 {
 			best := bestMixedTopology(report.Trials)
 			if best <= 0 {
-				return r.abandon(report, errors.New("cannot select sustained topology: mixed sweep accepted no data"))
+				return r.abandon(report, errors.New("cannot select sustained topology: no valid mixed sweep trial; inspect generator-processes and classification notes"))
 			}
 			spec.ProcessesPerSignal = best
 			plan[i] = spec
@@ -94,6 +104,15 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 		report.Trials = append(report.Trials, trial)
 		report.Settings.Methodology += r.readSummary
 		printTrialLine(r.Out, trial)
+		if r.Config.Preset == "validate" {
+			if stop := sweepStop(plan[i+1:], report.Trials); stop != nil {
+				report.SweepStops = append(report.SweepStops, *stop)
+				for _, name := range stop.SkippedPhases {
+					skipped[name] = true
+				}
+				fmt.Fprintf(r.Out, "     sweep stopped: %s; skipped %v\n", stop.Reason, stop.SkippedPhases)
+			}
+		}
 	}
 
 	if r.Config.Cooldown > 0 {
@@ -253,6 +272,7 @@ func (r *Runner) runPhase(ctx context.Context, spec PhaseSpec, previous []Trial)
 		ProcessRestarted: restarted, Resources: resources,
 		QueryLatency: queries.hist.snapshot(), QueryAttempts: queries.attempts, QueryFailures: queries.failures,
 		QueryKindCompleted: queries.completedByKind(),
+		DashboardPanels:    queries.panelSummary(),
 		QueryShed:          queries.shed, QueryCanceled: queries.canceled,
 		Samples: samples,
 	}
@@ -400,7 +420,8 @@ func (r *Runner) sample(ctx context.Context, started time.Time, done chan<- []Re
 
 func resourceSample(s *snapshot, at float64) ResourceSample {
 	return ResourceSample{
-		AtSeconds: round(at, 3), CPUSeconds: s.total("process_cpu_seconds_total", nil),
+		PanelMetrics: panelMetricSamples(s),
+		AtSeconds:    round(at, 3), CPUSeconds: s.total("process_cpu_seconds_total", nil),
 		RSSBytes: s.total("process_resident_memory_bytes", nil), HeapBytes: s.total("go_memstats_heap_alloc_bytes", nil),
 		QueueDepth: s.total("fanout_ingest_queue_depth", nil), ParquetFiles: s.total("fanout_parquet_files", nil),
 		ParquetBytes: s.total("fanout_parquet_size_bytes", nil), PublishWaiters: s.total("fanout_parquet_publish_waiters", nil),
@@ -413,6 +434,10 @@ func resourceSample(s *snapshot, at float64) ResourceSample {
 		CompactionsTotal:               s.total("fanout_telemetry_operation_duration_seconds_count", map[string]string{"operation": "compaction"}),
 		PublishWaitSecondsTotal:        s.total("fanout_parquet_publish_wait_seconds_sum", nil),
 		IngestBackpressureSecondsTotal: s.total("fanout_ingest_backpressure_seconds_total", nil),
+		IngestThrottledTotal:           sampleTotalsByLabel(s, "fanout_ingest_throttled_total", "reason"),
+		IngestAdmissionRowsPerSecond:   s.total("fanout_ingest_admission_rows_per_second", nil),
+		CompactionRetiredBatchesTotal:  s.total("fanout_compaction_retired_batches_total", nil),
+		CompactionPassSecondsTotal:     s.total("fanout_compaction_pass_seconds_sum", nil),
 		CompactionBacklogBatches:       s.total("fanout_compaction_backlog_batches", nil),
 	}
 }
@@ -512,7 +537,7 @@ func bestMixedTopology(trials []Trial) int {
 	bestRate, processes := -1.0, 0
 	fallbackCompletion, fallbackRate, fallbackProcesses := -1.0, -1.0, 0
 	for _, t := range trials {
-		if t.Spec.Signal != Mixed || t.Spec.Kind != "sweep" || t.GeneratorFailures != 0 {
+		if t.Spec.Signal != Mixed || t.Spec.Kind != "sweep" || t.GeneratorFailures != 0 || t.RowsDropped > 0 || t.ProcessRestarted || t.Accepted.Total() <= 0 {
 			continue
 		}
 		completion := 1.0
@@ -597,8 +622,9 @@ func summarize(report Report, cooldownRSS, cooldownHeap float64) Summary {
 		restartsOK = restartsOK && !t.ProcessRestarted
 		dataOK = dataOK && t.Accepted.Total() > 0
 	}
+	generatorDetail := generatorProcessDetail(genOK, report.Trials)
 	s.Gates = []Gate{
-		{"generator-processes", genOK, boolDetail(genOK, "all exited successfully", "at least one failed")},
+		{"generator-processes", genOK, generatorDetail},
 		{"server-dropped-rows", dropsOK, boolDetail(dropsOK, "zero", "non-zero")},
 		{"server-restarts", restartsOK, boolDetail(restartsOK, "none", "detected")},
 		{"authoritative-counters", dataOK, boolDetail(dataOK, "Fanout accepted rows in every phase", "a phase accepted no rows")},
@@ -628,6 +654,9 @@ func summarize(report Report, cooldownRSS, cooldownHeap float64) Summary {
 		"telemetrygen payloads are intentionally synthetic and highly compressible; storage size is not representative of production telemetry.",
 		"Offered load is a target. Headline throughput uses Fanout's accepted-row counters, never telemetrygen's intended or generated count.",
 	}
+	if strings.HasPrefix(report.Build.FanoutArtifact, UnreleasedArtifactPrefix) {
+		s.Warnings = append([]string{"Fanout " + report.Build.FanoutVersion + " is an unreleased local build without a verifiable release checksum. This run is diagnostic and must not be published."}, s.Warnings...)
+	}
 	if report.Host.GeneratorLocal {
 		s.Warnings = append(s.Warnings, "Fanout and load generators shared one host; generator contention can make the observed peak lower than Fanout's backend ceiling.")
 	}
@@ -642,7 +671,7 @@ func settingsFrom(c Config) Settings {
 	if c.Insecure {
 		transport = "plaintext gRPC"
 	}
-	return Settings{Preset: c.Preset, Endpoint: c.Endpoint, MetricsURL: c.MetricsURL, Transport: transport, Repeat: c.Repeat,
+	return Settings{Signals: c.SignalSelection, EarlyStop: c.Preset == "validate", Preset: c.Preset, Endpoint: c.Endpoint, MetricsURL: c.MetricsURL, Transport: transport, Repeat: c.Repeat,
 		SampleInterval: c.SampleInterval, SampleSeconds: c.SampleInterval.Seconds(), GeneratorTimeout: c.GeneratorTimeout,
 		TimeoutSeconds: c.GeneratorTimeout.Seconds(), Cooldown: c.Cooldown, CooldownSeconds: c.Cooldown.Seconds(), DataDir: c.DataDir,
 		QueryURL: c.QueryURL, QueryRate: c.QueryRate, BatchSize: c.BatchSize, TraceChildSpans: 1,
@@ -799,4 +828,22 @@ func boolDetail(ok bool, yes, no string) string {
 		return yes
 	}
 	return no
+}
+
+// Generator errors in classification notes have already had credentials redacted.
+func generatorProcessDetail(ok bool, trials []Trial) string {
+	detail := boolDetail(ok, "all exited successfully", "at least one failed")
+	if ok {
+		return detail
+	}
+	for _, trial := range trials {
+		for _, note := range trial.ClassificationNotes {
+			for _, line := range strings.Split(note, "\n") {
+				if strings.Contains(line, "FATAL") {
+					return detail + "; " + strings.TrimSpace(line)
+				}
+			}
+		}
+	}
+	return detail
 }

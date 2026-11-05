@@ -5,7 +5,17 @@ import (
 	"time"
 )
 
+func ValidateSignalSelection(selection string) error {
+	if selection != "" && selection != "all" && selection != "mixed" {
+		return fmt.Errorf("unknown signals %q (want all or mixed)", selection)
+	}
+	return nil
+}
+
 func Plan(cfg Config) ([]PhaseSpec, error) {
+	if err := ValidateSignalSelection(cfg.SignalSelection); err != nil {
+		return nil, err
+	}
 	if cfg.Repeat <= 0 {
 		return nil, fmt.Errorf("repeat must be positive")
 	}
@@ -26,10 +36,14 @@ func Plan(cfg Config) ([]PhaseSpec, error) {
 		s = shape{[]int{1}, 2, 1_000, 5 * time.Second, 10 * time.Second, 2 * time.Second}
 	case "standard":
 		s = shape{[]int{1, 2, 4, 8}, 8, 2_500, 15 * time.Second, 60 * time.Second, 10 * time.Second}
-	case "publish":
+	case "publish", "validate":
 		s = shape{[]int{1, 2, 4, 8, 16, 32, 64}, 8, 2_500, 30 * time.Second, 5 * time.Minute, 15 * time.Second}
+	case "local":
+		// The publish shape cut to the upper sweep points, so one repetition of
+		// a same-host A/B comparison finishes well inside 25 minutes.
+		s = shape{[]int{8, 16, 32}, 8, 2_500, 30 * time.Second, 5 * time.Minute, 15 * time.Second}
 	default:
-		return nil, fmt.Errorf("unknown preset %q (want quick, standard, or publish)", cfg.Preset)
+		return nil, fmt.Errorf("unknown preset %q (want quick, standard, local, validate, or publish)", cfg.Preset)
 	}
 	if cfg.ProcessOverride > 0 {
 		s.processes = []int{cfg.ProcessOverride}
@@ -55,6 +69,9 @@ func Plan(cfg Config) ([]PhaseSpec, error) {
 	phases := []PhaseSpec{makePhase("warmup", "warmup", Mixed, s.warmup, 1, 1)}
 	for repetition := 1; repetition <= cfg.Repeat; repetition++ {
 		for _, signal := range Signals {
+			if cfg.SignalSelection == "mixed" {
+				continue
+			}
 			for _, processes := range s.processes {
 				name := fmt.Sprintf("%s-p%d-r%d", signal, processes, repetition)
 				phases = append(phases, makePhase(name, "sweep", signal, s.trial, processes, repetition))

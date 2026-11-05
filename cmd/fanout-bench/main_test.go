@@ -28,7 +28,7 @@ func TestSplitReproductionCommandPassesValidationAfterSubstitution(t *testing.T)
 	cfg, err := commonFlags("run", []string{
 		"--host", "root@192.0.2.10", "--generator-host", "root@192.0.2.11",
 		"--generator-address", "10.77.0.3", "--fanout-listen", "10.77.0.2",
-		"--ssh-port", "2222", "--telemetrygen", executable, "--preset", "quick",
+		"--ssh-port", "2222", "--telemetrygen", executable, "--preset", "validate", "--signals", "mixed",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -40,6 +40,9 @@ func TestSplitReproductionCommandPassesValidationAfterSubstitution(t *testing.T)
 	report, err := runner.Run(ctx)
 	if err == nil || report == nil {
 		t.Fatalf("expected partial report on cancellation, got report=%v err=%v", report, err)
+	}
+	if !strings.Contains(report.Settings.Methodology, "were skipped") || !report.Settings.EarlyStop {
+		t.Fatal("missing validation coverage")
 	}
 	command := strings.NewReplacer(
 		"<host>", "192.0.2.20", "<generator-host>", "192.0.2.21",
@@ -54,6 +57,9 @@ func TestSplitReproductionCommandPassesValidationAfterSubstitution(t *testing.T)
 	reproduced, err := commonFlags("run", args[2:])
 	if err != nil {
 		t.Fatalf("substituted reproduction failed validation: %v\n%s", err, command)
+	}
+	if reproduced.SignalSelection != "mixed" || reproduced.Preset != "validate" {
+		t.Fatal("validation flags lost")
 	}
 	if reproduced.Host != "root@192.0.2.20" || reproduced.GeneratorHost != "root@192.0.2.21" ||
 		reproduced.GeneratorAddress != "10.77.0.13" || reproduced.FanoutListen != "10.77.0.12" || reproduced.SSHPort != 2222 {
@@ -107,5 +113,35 @@ func TestSplitFlagsRequiredTogetherAndRemoteOnly(t *testing.T) {
 	cfg, err := commonFlags("run", args)
 	if err != nil || !strings.Contains(cfg.GeneratorHostDescription, "ccx43") {
 		t.Fatalf("generator description=%q, err=%v", cfg.GeneratorHostDescription, err)
+	}
+}
+
+func TestFanoutBinaryRequiresRemoteHost(t *testing.T) {
+	if _, err := commonFlags("run", []string{"--fanout-binary", "/tmp/fanout", "--fanout-version", "explore-test"}); err == nil {
+		t.Fatal("accepted --fanout-binary without --host")
+	}
+	cfg, err := commonFlags("run", []string{"--host", "root@192.0.2.10", "--fanout-binary", "/tmp/fanout", "--fanout-version", "explore-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FanoutBinary != "/tmp/fanout" {
+		t.Fatalf("fanout binary=%q", cfg.FanoutBinary)
+	}
+}
+
+func TestValidationFlags(t *testing.T) {
+	for _, args := range [][]string{{"--signals", "mixed", "--preset", "validate"}, {"--signals=mixed", "--preset=publish"}} {
+		cfg, err := commonFlags("run", args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.SignalSelection != "mixed" {
+			t.Fatal(cfg.SignalSelection)
+		}
+	}
+	for _, args := range [][]string{{"--signals"}, {"--signals", "logs"}, {"--signals", "mixed,traces"}} {
+		if _, err := commonFlags("run", args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
 	}
 }

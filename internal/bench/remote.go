@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,6 +23,44 @@ import (
 
 var sshTargetPattern = regexp.MustCompile(`^(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\])$`)
 var fanoutVersionPattern = regexp.MustCompile(`^v[0-9]{4}\.(?:[1-9]|1[0-2])\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta|rc))?$`)
+var unreleasedLabelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// UnreleasedArtifactPrefix marks a Fanout binary supplied with --fanout-binary.
+// Such a build has no release checksum to verify against, so its results are
+// diagnostic and never publishable.
+const UnreleasedArtifactPrefix = "unreleased-local-binary"
+
+// ValidateFanoutSource checks the Fanout identity of a remote run: a published
+// release by default, or a local binary with a label that cannot be mistaken
+// for a release.
+func ValidateFanoutSource(cfg Config) error {
+	if cfg.FanoutBinary == "" {
+		if cfg.FanoutVersion == "" || cfg.FanoutVersion == "unknown" {
+			return errors.New("--fanout-version is required for a remote run")
+		}
+		if !fanoutVersionPattern.MatchString(cfg.FanoutVersion) {
+			return fmt.Errorf("invalid Fanout release %q: want vYYYY.M.N[-alpha|-beta|-rc]", cfg.FanoutVersion)
+		}
+		return nil
+	}
+	if cfg.FanoutVersion == "" || cfg.FanoutVersion == "unknown" {
+		return errors.New("--fanout-binary requires a --fanout-version label for the unreleased build")
+	}
+	if fanoutVersionPattern.MatchString(cfg.FanoutVersion) {
+		return fmt.Errorf("--fanout-binary label %q looks like a release; use a non-release label such as branch-commit", cfg.FanoutVersion)
+	}
+	if !unreleasedLabelPattern.MatchString(cfg.FanoutVersion) {
+		return fmt.Errorf("invalid unreleased Fanout label %q: want letters, digits, '.', '_' or '-'", cfg.FanoutVersion)
+	}
+	info, err := os.Stat(cfg.FanoutBinary)
+	if err != nil {
+		return fmt.Errorf("--fanout-binary: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("--fanout-binary %s is not a regular file", cfg.FanoutBinary)
+	}
+	return nil
+}
 
 // ValidateGeneratorHosts also runs before local execution, so partial split
 // configurations cannot silently fall back to same-host load.
@@ -56,11 +95,8 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 	if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
 		return fmt.Errorf("invalid SSH port %d", cfg.SSHPort)
 	}
-	if cfg.FanoutVersion == "" || cfg.FanoutVersion == "unknown" {
-		return errors.New("--fanout-version is required for a remote run")
-	}
-	if !fanoutVersionPattern.MatchString(cfg.FanoutVersion) {
-		return fmt.Errorf("invalid Fanout release %q: want vYYYY.M.N[-alpha|-beta|-rc]", cfg.FanoutVersion)
+	if err := ValidateFanoutSource(cfg); err != nil {
+		return err
 	}
 	if _, err := Plan(cfg); err != nil {
 		return err
@@ -118,10 +154,19 @@ func RunRemote(ctx context.Context, cfg Config, version string, out io.Writer) e
 	if err != nil {
 		return fmt.Errorf("build telemetrygen: %w", err)
 	}
-	fmt.Fprintln(out, "  ◌ downloading and verifying the Fanout release")
-	fanoutPath, artifact, err := fetchFanout(ctx, buildDir, cfg.FanoutVersion, remoteOS, remoteArch)
-	if err != nil {
-		return fmt.Errorf("fetch Fanout release: %w", err)
+	var fanoutPath, artifact string
+	if cfg.FanoutBinary != "" {
+		fmt.Fprintln(out, "  ◌ staging the unreleased local Fanout binary (not publishable)")
+		fanoutPath, artifact, err = stageLocalFanout(cfg.FanoutBinary, buildDir, remoteArch)
+		if err != nil {
+			return fmt.Errorf("stage local Fanout binary: %w", err)
+		}
+	} else {
+		fmt.Fprintln(out, "  ◌ downloading and verifying the Fanout release")
+		fanoutPath, artifact, err = fetchFanout(ctx, buildDir, cfg.FanoutVersion, remoteOS, remoteArch)
+		if err != nil {
+			return fmt.Errorf("fetch Fanout release: %w", err)
+		}
 	}
 
 	suffix, err := randomHex(16)
@@ -380,6 +425,41 @@ func fetchFanout(ctx context.Context, dir, version, goos, goarch string) (string
 	return binaryPath, assetURL + "#sha256=" + got, nil
 }
 
+// stageLocalFanout copies a local Linux ELF binary for the remote architecture
+// into the upload directory and identifies it by checksum as unreleased.
+func stageLocalFanout(source, dir, goarch string) (string, string, error) {
+	file, err := elf.Open(source)
+	if err != nil {
+		return "", "", fmt.Errorf("%s is not a Linux ELF binary: %w", source, err)
+	}
+	machine := file.Machine
+	file.Close()
+	want := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}[goarch]
+	if machine != want {
+		return "", "", fmt.Errorf("%s targets %s, remote host is %s", source, machine, goarch)
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return "", "", err
+	}
+	defer in.Close()
+	destination := filepath.Join(dir, "fanout")
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+	if err != nil {
+		return "", "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(out, hash), in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return "", "", copyErr
+	}
+	if closeErr != nil {
+		return "", "", closeErr
+	}
+	return destination, UnreleasedArtifactPrefix + "#sha256=" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 func fanoutAsset(version, goos, goarch string) (string, error) {
 	if !fanoutVersionPattern.MatchString(version) {
 		return "", fmt.Errorf("invalid Fanout release %q", version)
@@ -447,7 +527,7 @@ func extractBinary(archivePath, destination, name string) error {
 }
 
 func managedRemoteCommand(stage string, cfg Config, version, artifact string) string {
-	args := []string{stage + "/fanout-bench", "managed", "--fanout", stage + "/fanout", "--output", stage + "/results", "--fanout-version", cfg.FanoutVersion, "--fanout-artifact", artifact, "--preset", cfg.Preset, "--repeat", fmt.Sprint(cfg.Repeat), "--batch-size", fmt.Sprint(cfg.BatchSize), "--query-rate", fmt.Sprint(cfg.QueryRate), "--sample-interval", cfg.SampleInterval.String(), "--cooldown", cfg.Cooldown.String(), "--harness-version", version}
+	args := []string{stage + "/fanout-bench", "managed", "--fanout", stage + "/fanout", "--output", stage + "/results", "--fanout-version", cfg.FanoutVersion, "--fanout-artifact", artifact, "--signals", cfg.SignalSelection, "--preset", cfg.Preset, "--repeat", fmt.Sprint(cfg.Repeat), "--batch-size", fmt.Sprint(cfg.BatchSize), "--query-rate", fmt.Sprint(cfg.QueryRate), "--sample-interval", cfg.SampleInterval.String(), "--cooldown", cfg.Cooldown.String(), "--harness-version", version}
 	args = append(args, "--telemetrygen-version", cfg.TelemetrygenVersion)
 	args = append(args, "--provisioned-host", redactedHost(cfg.Host), "--host-description", cfg.HostDescription)
 	args = append(args, "--provisioned-ssh-port", fmt.Sprint(cfg.SSHPort), "--provisioned-ssh-identity", cfg.SSHIdentity)
