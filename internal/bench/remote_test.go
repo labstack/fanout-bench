@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -333,5 +334,95 @@ func TestKnownHostsReachesSSHAndSCPArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateFanoutSource(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "fanout")
+	if err := os.WriteFile(binary, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	valid := []Config{
+		{FanoutVersion: "v2026.10.8-alpha"},
+		{FanoutVersion: "explore-fdfbf7f5", FanoutBinary: binary},
+		{FanoutVersion: "main.abc123_dirty", FanoutBinary: binary},
+	}
+	for _, cfg := range valid {
+		if err := ValidateFanoutSource(cfg); err != nil {
+			t.Errorf("%+v: %v", cfg, err)
+		}
+	}
+	invalid := []Config{
+		{FanoutVersion: "unknown"},
+		{FanoutVersion: "explore-fdfbf7f5"},
+		{FanoutVersion: "unknown", FanoutBinary: binary},
+		{FanoutVersion: "", FanoutBinary: binary},
+		{FanoutVersion: "v2026.10.8-alpha", FanoutBinary: binary},
+		{FanoutVersion: "-explore", FanoutBinary: binary},
+		{FanoutVersion: "explore/evil", FanoutBinary: binary},
+		{FanoutVersion: "explore;bad", FanoutBinary: binary},
+		{FanoutVersion: "explore", FanoutBinary: filepath.Join(dir, "missing")},
+		{FanoutVersion: "explore", FanoutBinary: dir},
+	}
+	for _, cfg := range invalid {
+		if err := ValidateFanoutSource(cfg); err == nil {
+			t.Errorf("accepted invalid Fanout source %+v", cfg)
+		}
+	}
+}
+
+func TestStageLocalFanoutRejectsNonELFAndWrongArch(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fanout")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := stageLocalFanout(script, t.TempDir(), "amd64"); err == nil {
+		t.Error("accepted a non-ELF binary")
+	}
+	// The test binary itself is an ELF only on Linux; elsewhere skip the arch check.
+	self, err := os.Executable()
+	if err != nil || runtime.GOOS != "linux" {
+		return
+	}
+	other := map[string]string{"amd64": "arm64", "arm64": "amd64"}[runtime.GOARCH]
+	if _, _, err := stageLocalFanout(self, t.TempDir(), other); err == nil {
+		t.Error("accepted a binary for the wrong architecture")
+	}
+	path, artifact, err := stageLocalFanout(self, t.TempDir(), runtime.GOARCH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != "fanout" || !strings.HasPrefix(artifact, UnreleasedArtifactPrefix+"#sha256=") {
+		t.Errorf("path=%q artifact=%q", path, artifact)
+	}
+}
+
+func TestUnreleasedBuildIsMarkedNotPublishable(t *testing.T) {
+	report := Report{Build: Build{FanoutVersion: "explore-fdfbf7f5", FanoutArtifact: UnreleasedArtifactPrefix + "#sha256=00"}}
+	s := summarize(report, 0, 0)
+	if len(s.Warnings) == 0 || !strings.Contains(s.Warnings[0], "must not be published") {
+		t.Errorf("warnings=%q", s.Warnings)
+	}
+	report.Build.FanoutArtifact = "https://github.com/labstack/fanout/releases/download/v2026.10.8-alpha/x#sha256=00"
+	for _, warning := range summarize(report, 0, 0).Warnings {
+		if strings.Contains(warning, "must not be published") {
+			t.Errorf("release run marked unpublishable: %q", warning)
+		}
+	}
+}
+
+func TestValidationSelectionForwardedToManaged(t *testing.T) {
+	cfg := Config{Preset: "validate", SignalSelection: "mixed"}
+	command := managedRemoteCommand("/stage", cfg, "test", "artifact")
+	for _, want := range []string{"'--signals' 'mixed'", "'--preset' 'validate'"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("missing %s: %s", want, command)
+		}
+	}
+	got := managedRunnerConfig(ManagedConfig{Preset: "validate", SignalSelection: "mixed"}, "127.0.0.1:1", "/stage/data")
+	if got.SignalSelection != cfg.SignalSelection || got.Preset != cfg.Preset {
+		t.Fatal("managed flags lost")
 	}
 }

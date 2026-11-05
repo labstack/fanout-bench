@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -72,10 +73,12 @@ func commonFlags(name string, args []string) (bench.Config, error) {
 		fs.StringVar(&cfg.GeneratorAddress, "generator-address", "", "generator host IP reachable from the Fanout host")
 		fs.StringVar(&cfg.FanoutListen, "fanout-listen", "", "Fanout host IP reachable from the generator host")
 		fs.StringVar(&cfg.GeneratorHostDescription, "generator-host-description", "", "generator host description recorded in the report")
+		fs.StringVar(&cfg.FanoutBinary, "fanout-binary", "", "local Linux Fanout binary for a remote run instead of a release; --fanout-version is then a non-release label and the report is marked not publishable")
 	}
 	fs.IntVar(&cfg.SSHPort, "ssh-port", 22, "SSH port")
 	fs.BoolVar(&cfg.KeepRemote, "keep-remote", false, "preserve the isolated remote run directory after downloading artifacts")
-	fs.StringVar(&cfg.Preset, "preset", "standard", "suite: quick, standard, or publish")
+	fs.StringVar(&cfg.SignalSelection, "signals", "all", "sweeps: all or mixed (skips single-signal sweeps)")
+	fs.StringVar(&cfg.Preset, "preset", "standard", "suite: quick, standard, local, validate, or publish")
 	fs.StringVar(&cfg.Endpoint, "endpoint", "localhost:7520", "Fanout OTLP/gRPC endpoint")
 	fs.StringVar(&cfg.MetricsURL, "metrics-url", "http://localhost:7520/metrics", "Fanout Prometheus metrics URL (required evidence source)")
 	fs.BoolVar(&cfg.Insecure, "insecure", false, "use plaintext OTLP/gRPC")
@@ -104,8 +107,14 @@ func commonFlags(name string, args []string) (bench.Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
+	if err := bench.ValidateSignalSelection(cfg.SignalSelection); err != nil {
+		return cfg, err
+	}
 	if err := bench.ValidateGeneratorHosts(cfg); err != nil {
 		return cfg, err
+	}
+	if cfg.FanoutBinary != "" && cfg.Host == "" {
+		return cfg, errors.New("--fanout-binary requires a remote run with --host")
 	}
 	cfg.Token = os.Getenv(tokenEnv)
 	cfg.MetricsToken = os.Getenv(metricsTokenEnv)
@@ -162,6 +171,7 @@ func managed(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.OutputDir, "output", "./results", "remote evidence directory")
 	fs.StringVar(&cfg.FanoutVersion, "fanout-version", "unknown", "Fanout version")
 	fs.StringVar(&cfg.FanoutArtifact, "fanout-artifact", "", "verified release artifact identity")
+	fs.StringVar(&cfg.SignalSelection, "signals", "all", "sweeps: all or mixed (skips single-signal sweeps)")
 	fs.StringVar(&cfg.Preset, "preset", "standard", "suite preset")
 	fs.IntVar(&cfg.Repeat, "repeat", 1, "sweep repetitions")
 	fs.IntVar(&cfg.BatchSize, "batch-size", 1000, "OTLP batch size")

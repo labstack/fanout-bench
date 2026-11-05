@@ -13,7 +13,7 @@ func TestQueryRunMaintainsOpenLoopScheduleThroughLatency(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"results":[{"status":"empty"}]}`)
+		fmt.Fprint(w, `{"status":"empty"}`)
 	}))
 	defer server.Close()
 
@@ -41,7 +41,7 @@ func TestQueryRunFinishDrainsInFlightRequestsWithoutFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"results":[{"status":"empty"}]}`)
+		fmt.Fprint(w, `{"status":"empty"}`)
 	}))
 	defer server.Close()
 
@@ -67,7 +67,7 @@ func TestQueryRunFinishDrainsInFlightRequestsWithoutFailures(t *testing.T) {
 func TestQueryRunDoesNotShedWhileWorkersAreAvailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"results":[{"status":"empty"}]}`)
+		fmt.Fprint(w, `{"status":"empty"}`)
 	}))
 	defer server.Close()
 

@@ -118,6 +118,10 @@ func printSummary(w io.Writer, r Report) {
 		name string
 		peak Peak
 	}{{"Traces", r.Summary.PeakTraces}, {"Logs", r.Summary.PeakLogs}, {"Metric points", r.Summary.PeakMetrics}, {"Mixed peak", r.Summary.PeakMixed}, {"Mixed sustained", r.Summary.SustainedMixed}} {
+		if r.Settings.Signals == "mixed" && !strings.HasPrefix(row.name, "Mixed") && row.peak.TrialName == "" {
+			fmt.Fprintf(t, "  %s\tskipped (--signals mixed)\n", row.name)
+			continue
+		}
 		fmt.Fprintf(t, "  %s\t%s\t%s\t%.2f cores\t%s\n", row.name, formatNumber(row.peak.AcceptedPerSecond), formatNumber(row.peak.OfferedPerSecond), row.peak.AverageCPUCores, formatBytes(row.peak.PeakRSSBytes))
 	}
 	t.Flush()
@@ -142,6 +146,10 @@ func Markdown(r Report) string {
 		name string
 		peak Peak
 	}{{"Traces (spans)", r.Summary.PeakTraces}, {"Logs (records)", r.Summary.PeakLogs}, {"Metrics (data points)", r.Summary.PeakMetrics}, {"Mixed peak", r.Summary.PeakMixed}, {"Mixed sustained", r.Summary.SustainedMixed}} {
+		if r.Settings.Signals == "mixed" && !strings.HasPrefix(row.name, "Mixed") && row.peak.TrialName == "" {
+			fmt.Fprintf(&b, "| %s | skipped (--signals mixed) | — | — | — |\n", row.name)
+			continue
+		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %.2f cores | %s |\n", row.name, formatNumber(row.peak.AcceptedPerSecond), formatNumber(row.peak.OfferedPerSecond), row.peak.AverageCPUCores, formatBytes(row.peak.PeakRSSBytes))
 	}
 	fmt.Fprintf(&b, "\n**Meaning:** accepted throughput is the delta of `fanout_ingest_rows_total` divided by the interval between the two counter scrapes that bracket the phase. It is not telemetrygen's requested or locally generated count.\n\n")
@@ -158,6 +166,9 @@ func Markdown(r Report) string {
 	settings := [][2]string{{"Fanout version", display(r.Build.FanoutVersion)}, {"Fanout commit", display(r.Build.FanoutCommit)}, {"Fanout artifact", display(r.Build.FanoutArtifact)}, {"Harness", r.Build.HarnessVersion + " (`" + r.Build.HarnessCommit + "`)"}, {"telemetrygen", display(r.Build.TelemetrygenVersion)}, {"Machine", fmt.Sprintf("%s/%s · %s · %d logical CPUs · %s RAM", r.Host.OS, r.Host.Architecture, machine, r.Host.LogicalCPUs, formatBytes(float64(r.Host.MemoryBytes)))}, {"Generator host", display(r.Host.GeneratorDescription)}, {"Generator placement", map[bool]string{true: "same host as Fanout", false: "separate/remote"}[r.Host.GeneratorLocal]}, {"Preset", r.Settings.Preset}, {"Transport", r.Settings.Transport}, {"Batch size", fmt.Sprintf("%d", r.Settings.BatchSize)}, {"Trace shape", "1 parent + 1 child span per telemetrygen trace tick"}, {"Repeat", fmt.Sprintf("%d", r.Settings.Repeat)}, {"Sample interval", fmt.Sprintf("%.1fs", r.Settings.SampleSeconds)}, {"Workload SHA-256", "`" + r.WorkloadSHA256 + "`"}}
 	for _, row := range settings {
 		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
+	}
+	for _, stop := range r.SweepStops {
+		fmt.Fprintf(&b, "\n**Sweep stopped after %s:** %s. Skipped: %s.\n", stop.AfterPhase, stop.Reason, strings.Join(stop.SkippedPhases, ", "))
 	}
 	fmt.Fprintf(&b, "\n## Complete phase breakdown\n\n| Phase | Signal | Topology (processes per signal × workers) | Duration | Offered/s | Accepted/s | Ratio | Fanout CPU cores | Generator CPU cores / logical CPUs | Peak RSS | Queue peak | Result |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n")
 	for _, t := range r.Trials {
@@ -182,16 +193,20 @@ func Markdown(r Report) string {
 		}
 		fmt.Fprintln(&b)
 	}
+	renderDashboardPanels(&b, r.Trials)
 	fmt.Fprintf(&b, "\n## Methodology and limits\n\n%s\n\n", r.Settings.Methodology)
 	for _, warning := range r.Summary.Warnings {
 		fmt.Fprintf(&b, "- %s\n", warning)
 	}
-	fmt.Fprintf(&b, "\n## Reproduce\n\n```sh\n%s\n```\n\nRaw evidence: `report.json` (authoritative structured report) and `samples.jsonl` (time-series resource samples, including cumulative `ingest_rows_total` by signal (`spans`, `logs`, `metrics`), `rollup_seconds`, `write_gate_hold_seconds`, `write_gate_wait_seconds`, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, and `ingest_backpressure_seconds_total`, plus the current `compaction_backlog_batches` gauge when available).\n", r.ReproductionCommand)
+	fmt.Fprintf(&b, "\n## Reproduce\n\n```sh\n%s\n```\n\nRaw evidence: `report.json` (authoritative structured report) and `samples.jsonl` (time-series resource samples, including cumulative `ingest_rows_total` by signal (`spans`, `logs`, `metrics`), `rollup_seconds`, `write_gate_hold_seconds`, `write_gate_wait_seconds`, `compaction_seconds_total`, `compactions_total`, `publish_wait_seconds_total`, `ingest_backpressure_seconds_total`, `ingest_throttled_total`, `ingest_admission_rows_per_second`, `compaction_retired_batches_total`, and `compaction_pass_seconds_total`, plus the current `compaction_backlog_batches` gauge when available).\n", r.ReproductionCommand)
 	return b.String()
 }
 
 func reproductionCommand(c Config) string {
 	command := reproductionRunCommand(c)
+	if c.SignalSelection != "" && c.SignalSelection != "all" {
+		command += " --signals " + shellQuote(c.SignalSelection)
+	}
 	if c.HostDescription != "" {
 		command += " --host-description " + shellQuote(c.HostDescription)
 	}

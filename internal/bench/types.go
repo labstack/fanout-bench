@@ -31,6 +31,7 @@ type Config struct {
 	SSHPort                  int
 	KeepRemote               bool
 	Preset                   string
+	SignalSelection          string
 	Endpoint                 string
 	MetricsURL               string
 	Insecure                 bool
@@ -41,6 +42,7 @@ type Config struct {
 	FanoutVersion            string
 	FanoutCommit             string
 	FanoutArtifact           string
+	FanoutBinary             string
 	DataDir                  string
 	SampleInterval           time.Duration
 	GeneratorTimeout         time.Duration
@@ -107,6 +109,8 @@ type Build struct {
 }
 
 type Settings struct {
+	Signals          string        `json:"signals,omitempty"`
+	EarlyStop        bool          `json:"early_stop,omitempty"`
 	Preset           string        `json:"preset"`
 	Endpoint         string        `json:"endpoint"`
 	MetricsURL       string        `json:"metrics_url"`
@@ -144,6 +148,7 @@ type ResourceSample struct {
 	ParquetBytes                   float64            `json:"parquet_bytes"`
 	PublishWaiters                 float64            `json:"publish_waiters"`
 	PublishTimeouts                float64            `json:"publish_timeouts_total"`
+	PanelMetrics                   PanelMetrics       `json:"panel_metrics,omitempty"`
 	IngestRowsTotal                map[string]float64 `json:"ingest_rows_total,omitempty"`
 	RollupSeconds                  map[string]float64 `json:"rollup_seconds,omitempty"`
 	WriteGateHoldSeconds           map[string]float64 `json:"write_gate_hold_seconds,omitempty"`
@@ -152,6 +157,10 @@ type ResourceSample struct {
 	CompactionsTotal               float64            `json:"compactions_total,omitempty"`
 	PublishWaitSecondsTotal        float64            `json:"publish_wait_seconds_total,omitempty"`
 	IngestBackpressureSecondsTotal float64            `json:"ingest_backpressure_seconds_total,omitempty"`
+	IngestThrottledTotal           map[string]float64 `json:"ingest_throttled_total,omitempty"`
+	IngestAdmissionRowsPerSecond   float64            `json:"ingest_admission_rows_per_second,omitempty"`
+	CompactionRetiredBatchesTotal  float64            `json:"compaction_retired_batches_total,omitempty"`
+	CompactionPassSecondsTotal     float64            `json:"compaction_pass_seconds_total,omitempty"`
 	CompactionBacklogBatches       float64            `json:"compaction_backlog_batches,omitempty"`
 }
 
@@ -205,6 +214,7 @@ type Trial struct {
 	Resources           Resources        `json:"resources"`
 	QueryLatency        Latency          `json:"query_latency_ms,omitempty"`
 	QueryKindCompleted  map[string]int64 `json:"query_completed_by_kind,omitempty"`
+	DashboardPanels     []DashboardPanel `json:"dashboard_panels,omitempty"`
 	QueryAttempts       int64            `json:"query_attempts,omitempty"`
 	QueryFailures       int64            `json:"query_failures,omitempty"`
 	QueryShed           int64            `json:"query_shed,omitempty"`
@@ -236,16 +246,23 @@ type Summary struct {
 	Warnings       []string `json:"warnings,omitempty"`
 }
 
+type SweepStop struct {
+	AfterPhase    string   `json:"after_phase"`
+	Reason        string   `json:"reason"`
+	SkippedPhases []string `json:"skipped_phases"`
+}
+
 type Report struct {
-	SchemaVersion       string    `json:"schema_version"`
-	RunID               string    `json:"run_id"`
-	StartedAt           time.Time `json:"started_at"`
-	FinishedAt          time.Time `json:"finished_at"`
-	Build               Build     `json:"build"`
-	Host                Host      `json:"host"`
-	Settings            Settings  `json:"settings"`
-	WorkloadSHA256      string    `json:"workload_sha256"`
-	Trials              []Trial   `json:"trials"`
-	Summary             Summary   `json:"summary"`
-	ReproductionCommand string    `json:"reproduction_command"`
+	SweepStops          []SweepStop `json:"sweep_stops,omitempty"`
+	SchemaVersion       string      `json:"schema_version"`
+	RunID               string      `json:"run_id"`
+	StartedAt           time.Time   `json:"started_at"`
+	FinishedAt          time.Time   `json:"finished_at"`
+	Build               Build       `json:"build"`
+	Host                Host        `json:"host"`
+	Settings            Settings    `json:"settings"`
+	WorkloadSHA256      string      `json:"workload_sha256"`
+	Trials              []Trial     `json:"trials"`
+	Summary             Summary     `json:"summary"`
+	ReproductionCommand string      `json:"reproduction_command"`
 }

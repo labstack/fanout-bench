@@ -68,3 +68,35 @@ The local provisioner detects both Linux platforms, builds the harness for Fanou
 A plain `fanout-bench run --host root@<host>` without a generator host remains a same-host run on any clean Linux host. It is useful for diagnostics, but generator CPU contention limits what it says about Fanout’s own ingest ceiling.
 
 Before uploading to the ccx33, the local provisioner verifies `fanout_v2026.10.1-alpha_linux_amd64.tar.gz` against the release `SHA256SUMS`. Managed scrapes use private `/metrics` bearer authentication. Read load covers System overview dashboard refresh (batched panels followed by annotations), service-map exemplar drill-down, and trace detail over 15-minute through 24-hour windows. Publish the per-operation methodology, counts and latency, and dashboard spec hash alongside the requested and completed operation rates.
+
+## Faster validation runs
+
+Validation keeps the accepted-counter measurements, generator checks, read-completion gate, storage repair verification, warmup, and five-minute mixed sustained proof. It is intended for release/engineering validation; publication still requires the full `publish` sweeps and repetitions above.
+
+Use three independent VM pairs to overlap ingest, reads near 70% load, and reads at saturation:
+
+```sh
+export FANOUT_BENCH_HCLOUD_SSH_KEY='benchmark-key'
+scripts/hetzner.sh --parallel-groups \
+  --fanout-version v2026.10.1-alpha \
+  --preset validate --repeat 3 \
+  --output results/validate-ingest \
+  -- \
+  --fanout-version v2026.10.1-alpha \
+  --preset validate --repeat 1 --signals mixed --query-rate 20 --rate 210 \
+  --output results/validate-reads-70 \
+  -- \
+  --fanout-version v2026.10.1-alpha \
+  --preset validate --repeat 1 --signals mixed --query-rate 20 \
+  --output results/validate-reads-saturated
+```
+
+Replace the release and output directories for each run. `--rate 210` is per worker: it approximates 70% for the previously measured target and must be recalibrated when capacity changes; it is not an automatic 70% controller. `--signals mixed` keeps the mixed warmup, mixed sweep and mixed sustained phase, skipping the duplicate traces/logs/metrics sweeps in both read groups. Reports label those single-signal peaks as skipped.
+
+`validate` has the same maximum process counts (1 through 64), durations, workers, rates and batch sizes as `publish`. Within each signal and repetition it skips remaining sweep points after two consecutive accepted-throughput gains strictly below 5%, or an acceptance ratio below 50% and below half the preceding point. Comparisons require valid points; warmup, other signals and other repetitions cannot trigger a stop. The next repetition starts at the first point again. JSON `sweep_stops` and Markdown record the last measured phase, reason and exact skipped phases. Sustained topology selection still uses the best measured mixed point satisfying the read target, with the existing failing fallback when none qualifies. Early stopping can miss a later throughput recovery, so validation evidence does not replace a full ceiling sweep for publication. `publish` never stops early.
+
+Budget **about two hours wall time**, down from about four, using the observed 1.5-hour ingest group plus roughly 30 minutes of setup, verification and download as the longest path. Early stopping may shorten that further; it is not a guaranteed duration. Mixed-only read groups should finish sooner and their pairs are deleted as soon as each group finishes. Six VMs run at peak concurrency; ensure account quota and local build/network capacity allow that.
+
+For cost planning, if ingest occupies its pair for two started hours and each mixed-only read group stays within one started hour, the run bills **8 ccx33 VM-hours**: `2 × (2 + 1 + 1)`. That is about the VM cost of the previous four-hour run on one pair. If both read groups cross into a second hour, budget 12 VM-hours instead. Multiply by the selected location's current ccx33 hourly rate, then add applicable public IPv4 charges and tax. These are estimates based on the observed timings, not live price quotes; check current rates before provisioning.
+
+`--parallel-groups` must be the first script argument. The parent builds once and launches each group on its own isolated pair and network, printing the group number and all resource names. Each child retains the sequential script's cleanup and deletion retries; the parent waits for every child, including cleanup, and returns nonzero for any run/provisioning/deletion failure. Ctrl-C or TERM signals all active children and waits for their cleanup, including interrupted creates. Failed deletion names resources requiring manual removal. Use distinct `--output` paths; omitted outputs receive unique per-group directories under `results/parallel-*`. Without `--parallel-groups`, groups continue sharing one pair sequentially.

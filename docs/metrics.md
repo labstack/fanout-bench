@@ -48,7 +48,7 @@ Each `samples.jsonl` row also records the following `/metrics` values. The same 
 | `ingest_backpressure_seconds_total` | `fanout_ingest_backpressure_seconds_total` |
 | `compaction_backlog_batches` | `fanout_compaction_backlog_batches` |
 
-Durations and counts are cumulative values at scrape time, not phase deltas. Subtract adjacent samples to attribute work during an interval, accounting for process restarts. For per-second accepted-row rates, divide each signal's `ingest_rows_total` delta by the difference in `at_seconds` between consecutive samples. `compaction_backlog_batches` is a current gauge rather than a cumulative counter. Series with additional labels are summed, retaining the indicated map key for ingest signals, rollups, and write gates. Older Fanout releases may omit these metrics; absent maps and zero scalar values are omitted from JSON, and missing metrics do not fail a run. These samples provide attribution evidence without changing headline tables or quality gates.
+Durations and counts are cumulative values at scrape time, not phase deltas. Subtract adjacent samples to attribute work during an interval, accounting for process restarts. For per-second accepted-row rates, divide each signal's `ingest_rows_total` delta by the difference in `at_seconds` between consecutive samples. `compaction_backlog_batches` is a current gauge rather than a cumulative counter. Series with additional labels are summed, retaining the indicated map key for ingest signals, rollups, and write gates. Absent maps and zero scalar values are omitted from JSON, and missing metrics do not fail a run. These samples provide attribution evidence without changing headline tables or quality gates.
 
 ## Generator resources
 
@@ -68,9 +68,9 @@ Same-host runs keep the existing fallback: at least 95% is `target-sustained`, a
 
 ## Read workload
 
-Authenticated reads rotate equally across user operations `dashboard-refresh`, `drill-traces` (System overview service-map selection), and `trace-detail`, at 15m, 1h, 6h, 12h, and 24h. A refresh follows `page.tsx`, `use-panel-results.ts`, and `refresh.ts`: one sorted batch of all initially visible panel IDs with the full dashboard spec, range and refresh setting, service All, comparison per spec, and layout widths rounded to 100 pixels for a fixed 1664-pixel viewport. It then sends `POST /api/annotations` with the union of the returned time-panel bounds, when annotations are enabled and those bounds are present.
+Authenticated reads rotate equally across user operations `dashboard-refresh`, `drill-traces` (System overview service-map selection), and `trace-detail`, at 15m, 1h, 6h, 12h, and 24h. A refresh follows `page.tsx`, `use-panel-results.ts`, and `refresh.ts`: one sorted batch via `POST /api/queries/run` of all initially visible panel IDs with the full dashboard spec, range and refresh setting, service All, comparison per spec, and layout widths rounded to 100 pixels for a fixed 1664-pixel viewport. It then sends `POST /api/annotations/query` with the union of the returned time-panel bounds, when annotations are enabled and those bounds are present.
 
-Drill-down follows `drill-state.ts` and `drill.tsx`: select the first service-map node, then `POST /api/panels/exemplars` with the original dashboard, panel ID, kind, absolute panel window (`refresh: off`), full-window selection, service dimension, and variables. Trace detail is a separate UI operation using `GET /api/traces/:id` with the discovered namespace, original absolute window, and limit 200. References and selections are retained separately per range. Without a discovered trace, detail slots perform drill-down; without a cached selection, the slot performs dashboard refresh instead. A later slot can select the returned node, so each tick remains one user operation. Fallbacks are reported under the operation actually performed. The current System overview defines no log drill or standalone log/trace search, so synthetic search panels are omitted.
+Drill-down follows `drill-state.ts` and `drill.tsx`: select the first service-map node, then `POST /api/queries/exemplars` with the original dashboard, panel ID, kind, absolute panel window (`refresh: off`), full-window selection, service dimension, and variables. Trace detail is a separate UI operation using `GET /api/traces/:id` with the discovered namespace, original absolute window, and limit 200. References and selections are retained separately per range. Without a discovered trace, detail slots perform drill-down; without a cached selection, the slot performs dashboard refresh instead. A later slot can select the returned node, so each tick remains one user operation. Fallbacks are reported under the operation actually performed. The current System overview defines no log drill or standalone log/trace search, so synthetic search panels are omitted.
 
 One scheduled read is one operation. Its latency runs until every request completes; any failed request, panel error, missing panel result, or empty discovered trace detail fails the operation. Responses remain bounded at 32 MiB; responses exceeding this cap fail because their contents cannot be validated. The existing methodology string records the fetched dashboard spec SHA-256 and per-phase operation kinds, dispatched/completed counts, failures, cancellations, p95, and p99. Aggregate latency fields retain their schema.
 
@@ -87,6 +87,58 @@ When read load is enabled, the sustained mixed phase must also complete at least
 
 The read scheduler is open-loop and bounded. `query_attempts` counts scheduled operations, `query_latency_ms.count` counts valid completed operations, `query_shed` counts ticks rejected because the concurrency bound was full, and `query_canceled_at_phase_end` counts in-flight operations canceled when load stopped.
 
+### Dashboard panel evidence
+
+Each trial's `dashboard_panels` records per-panel counts for `ok`, `empty`,
+`busy`, `error`, `timeout`, and `missing`, including results from failed
+refreshes. Both JSON batches and NDJSON streams are supported. An error with
+`reason: busy` counts as busy; Fanout's public execution-deadline message
+counts as timeout. An explicit HTTP busy rejection or HTTP 504 applies that
+outcome to every requested non-text panel. Other unavailable results count as
+missing. Complete results in an interrupted stream are retained, and absent
+panels count as missing. Duplicate result IDs count once as an error. Text
+panels omitted by the server are exempt.
+
+`elapsed_ms` contains count, mean, maximum, and p50/p95/p99 of the server's
+reported duration, including errors and cache hits. Missing durations are
+excluded rather than replaced with client latency. All read latency
+histograms have 2,048 fixed logarithmic buckets; quantiles use bucket upper
+bounds with approximately 1% plus 0.01ms precision (durations above the final
+bucket use the observed maximum). Dashboard discovery permits at most 128
+panel IDs of at most 128 bytes each; additional response IDs share a bounded
+overflow entry. There is no retained list of individual refreshes.
+
+`cached` counts returned results with `cached: true`; `cached_percent` divides
+by `returned`, excluding missing results and whole-request rejections. When
+`fresh_to_ms` is present, `fresh_to_count`, `fresh_to_min_ms`, and
+`fresh_to_max_ms` preserve its presence and observed range, including a value
+of zero. `failed_refreshes` counts this panel's unsuccessful outcomes,
+excluding client-canceled requests. Several panels can cause the same failed
+refresh. The per-phase **Dashboard panels** tables flag these panels in the
+sustained phase. Annotation and other request failures can also fail a refresh
+whose panels all succeeded.
+
+### Server panel samples
+
+`samples.jsonl` and `trials[].samples` include `panel_metrics` when available,
+keyed by exact metric name, then `panel`, then `status`. Fanout's current
+names in `internal/metrics/panels.go` are `fanout_panel_*`, rather than
+`fanout_query_panel_*`:
+
+| Metric | Meaning |
+|---|---|
+| `fanout_panel_query_duration_seconds_count` | Executed outcomes (`ok`, `empty`, `error`, `other`) |
+| `fanout_panel_query_duration_seconds_sum` | Execution seconds by panel and outcome, excluding cache hits and admission wait |
+| `fanout_panel_admission_duration_seconds_count` | Admission counts (`admitted`, `rejected`, `canceled`, `timeout`, `other`) |
+| `fanout_panel_admission_duration_seconds_sum` | Admission wait seconds by panel and outcome |
+
+These are cumulative histogram counts and sums. Additional labels are summed;
+panel and status labels are retained. Subtract adjacent samples to measure
+outcomes and wait during an interval. Admission count series supply the
+rejection, cancellation, and timeout counters. A sample without these series
+omits `panel_metrics`; present zero counts are retained. These server
+metrics exclude result-cache hits, while client panel evidence includes them.
+
 Saturation is not an evidence failure. A valid phase can fail to sustain its offered target, which is the point of a capacity sweep.
 
 ## Interpretation limits
@@ -97,3 +149,18 @@ Saturation is not an evidence failure. A valid phase can fail to sustain its off
 - A short peak is not a sustained capacity claim. Publish the long mixed proof alongside signal-specific sweeps.
 - A stress peak that misses its read target is not serviceable mixed capacity. Use the sustained topology and its read-load gate for that claim.
 - No benchmark number transfers automatically across CPU models, storage devices, filesystems, retention settings, or Fanout versions.
+
+### Saturation admission samples
+
+`ingest_throttled_total` records `fanout_ingest_throttled_total` by reason
+(`debt`, `reads`, `budget`). `ingest_admission_rows_per_second` records the
+current cap; zero means uncapped. `compaction_retired_batches_total` records
+`fanout_compaction_retired_batches_total`; use deltas to measure retirement
+throughput. `compaction_pass_seconds_total` records the histogram sum from
+`fanout_compaction_pass_seconds_sum`.
+
+With saturation admission enabled, `ingest_backpressure_seconds_total` measures
+seconds with an active cap rather than seconds blocked in the writer. Values
+across this semantic change are not directly comparable. Failed generator
+quality gates include the first redacted FATAL line from the trial notes when
+available, so exporter deadline failures are visible in the summary.

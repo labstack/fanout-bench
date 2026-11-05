@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -82,9 +83,8 @@ func TestSystemOperationsMatchUIRequestConstruction(t *testing.T) {
 
 // Mirrors a panel batch response, including the effective window from discovery
 // and a selectable service-map node. No invented search dashboard is needed.
-func panelBatch(t *testing.T, query queryTarget, from, to int64) []byte {
-	t.Helper()
-	results := []any{}
+func panelResults(query queryTarget, from, to int64) []map[string]any {
+	results := []map[string]any{}
 	for _, id := range query.panels {
 		result := map[string]any{"id": id, "status": "empty", "from_ms": from, "to_ms": to}
 		if id == "service_map" {
@@ -93,11 +93,25 @@ func panelBatch(t *testing.T, query queryTarget, from, to int64) []byte {
 		}
 		results = append(results, result)
 	}
-	body, err := json.Marshal(map[string]any{"results": results})
-	if err != nil {
-		t.Fatal(err)
+	return results
+}
+
+// panelStream encodes results as the API's one-result-per-line stream.
+func panelStream(t *testing.T, results []map[string]any) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	encoder := json.NewEncoder(&body)
+	for _, result := range results {
+		if err := encoder.Encode(result); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return body
+	return body.Bytes()
+}
+
+func panelBatch(t *testing.T, query queryTarget, from, to int64) []byte {
+	t.Helper()
+	return panelStream(t, panelResults(query, from, to))
 }
 
 func TestWorkloadDiscoversAuthenticatedBuiltInDashboard(t *testing.T) {
@@ -138,9 +152,9 @@ func TestRefreshIncludesAnnotationsAndMeasuresWholeOperation(t *testing.T) {
 		}
 		time.Sleep(15 * time.Millisecond)
 		switch r.URL.Path {
-		case "/api/panels/query":
+		case "/api/queries/run":
 			w.Write(panelBatch(t, targets[0], 1000, 2000))
-		case "/api/annotations":
+		case "/api/annotations/query":
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if !reflect.DeepEqual(body, map[string]string{"from": "1970-01-01T00:00:01.000Z", "to": "1970-01-01T00:00:02.000Z"}) {
@@ -155,7 +169,7 @@ func TestRefreshIncludesAnnotationsAndMeasuresWholeOperation(t *testing.T) {
 	q := newQueryRun()
 	q.targets = targets
 	q.request(context.Background(), server.Client(), server.URL, "fanout_session=test", 0)
-	if !reflect.DeepEqual(paths, []string{"/api/panels/query", "/api/annotations"}) || q.failures != 0 || q.hist.snapshot().Count != 1 || q.hist.snapshot().MeanMs < 30 {
+	if !reflect.DeepEqual(paths, []string{"/api/queries/run", "/api/annotations/query"}) || q.failures != 0 || q.hist.snapshot().Count != 1 || q.hist.snapshot().MeanMs < 30 {
 		t.Fatalf("paths=%v failures=%d latency=%+v", paths, q.failures, q.hist.snapshot())
 	}
 	if summary := q.operationSummary("mixed"); !strings.Contains(summary, "| dashboard-refresh | 1 | 1 | 0 |") {
@@ -207,7 +221,7 @@ func TestTraceDetailFallsBackOnlyWithinItsOwnWindow(t *testing.T) {
 	q.traces["15m"] = traceReference{"other-window", "ns", "old-from", "old-to"}
 	q.selections["1h/service_map"] = drillSelection{"2026-10-01T12:00:00.000Z", "2026-10-01T13:00:00.000Z", map[string]string{"service": "checkout"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/panels/exemplars" {
+		if r.URL.Path != "/api/queries/exemplars" {
 			t.Errorf("wrong fallback path %s", r.URL.Path)
 		}
 		var body map[string]any
@@ -231,11 +245,11 @@ func TestSustainedQueryGateFailsWhenExemplarsStayEmpty(t *testing.T) {
 	targets, _, _ := systemQueryTargets(systemSpec(t))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/panels/query":
+		case "/api/queries/run":
 			w.Write(panelBatch(t, targets[0], 1000, 2000))
-		case "/api/annotations":
+		case "/api/annotations/query":
 			fmt.Fprint(w, `{}`)
-		case "/api/panels/exemplars":
+		case "/api/queries/exemplars":
 			fmt.Fprint(w, `{"traces":[]}`)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
@@ -293,16 +307,16 @@ func TestAnyOperationRequestOrPanelErrorFails(t *testing.T) {
 			targets, _, _ := systemQueryTargets(systemSpec(t))
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/api/panels/query":
+				case "/api/queries/run":
 					body := panelBatch(t, targets[0], 1000, 2000)
 					if defect == "panel-error" {
 						body = []byte(strings.Replace(string(body), `"status":"empty"`, `"status":"error"`, 1))
 					}
 					if defect == "missing-panel" {
-						body = []byte(`{"results":[{"id":"traffic","status":"empty"}]}`)
+						body = []byte(`{"id":"traffic","status":"empty"}`)
 					}
 					w.Write(body)
-				case "/api/annotations":
+				case "/api/annotations/query":
 					if defect == "annotation-http" {
 						http.Error(w, "failed", 500)
 					} else if defect == "annotation-json" {
@@ -310,7 +324,7 @@ func TestAnyOperationRequestOrPanelErrorFails(t *testing.T) {
 					} else {
 						fmt.Fprint(w, `{}`)
 					}
-				case "/api/panels/exemplars":
+				case "/api/queries/exemplars":
 					http.Error(w, "failed", 500)
 				default:
 					t.Errorf("unexpected route %s", r.URL.Path)
@@ -337,20 +351,19 @@ func TestEmptyDashboardDoesNotInventDrillSelection(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if r.URL.Path == "/api/annotations" {
+		if r.URL.Path == "/api/annotations/query" {
 			fmt.Fprint(w, `{}`)
 			return
 		}
-		if r.URL.Path != "/api/panels/query" {
+		if r.URL.Path != "/api/queries/run" {
 			t.Errorf("invented selection: %s", r.URL.Path)
 		}
-		body := decodeBody(t, panelBatch(t, targets[0], 1000, 2000))
-		for _, raw := range body["results"].([]any) {
-			result := raw.(map[string]any)
+		results := panelResults(targets[0], 1000, 2000)
+		for _, result := range results {
 			delete(result, "frame")
 			result["status"] = "empty"
 		}
-		_ = json.NewEncoder(w).Encode(body)
+		_, _ = w.Write(panelStream(t, results))
 	}))
 	defer server.Close()
 	q := newQueryRun()
@@ -363,7 +376,9 @@ func TestEmptyDashboardDoesNotInventDrillSelection(t *testing.T) {
 
 func TestAnnotationWindowUnionAndDisabledAnnotations(t *testing.T) {
 	query := queryTarget{timePanels: map[string]bool{"traffic": true, "latency": true}, annotations: true}
-	body := []byte(`{"results":[{"id":"traffic","status":"empty","from_ms":2000,"to_ms":5000},{"id":"latency","status":"empty","from_ms":1000,"to_ms":3000},{"id":"requests","status":"empty","from_ms":0,"to_ms":9000}]}`)
+	body := []byte(`{"id":"traffic","status":"empty","from_ms":2000,"to_ms":5000}
+{"id":"latency","status":"empty","from_ms":1000,"to_ms":3000}
+{"id":"requests","status":"empty","from_ms":0,"to_ms":9000}`)
 	q := newQueryRun()
 	annotations, ok := q.panelResponse(body, query)
 	if !ok || !reflect.DeepEqual(decodeBody(t, annotations), map[string]any{"from": "1970-01-01T00:00:01.000Z", "to": "1970-01-01T00:00:05.000Z"}) {
@@ -390,7 +405,7 @@ func TestUIBatchIncludesTextIDsAndRoundedGridWidths(t *testing.T) {
 		t.Fatalf("batch=%v", body)
 	}
 	q := newQueryRun()
-	if _, ok := q.panelResponse([]byte(`{"results":[{"id":"a","status":"empty"}]}`), targets[0]); !ok {
+	if _, ok := q.panelResponse([]byte(`{"id":"a","status":"empty"}`), targets[0]); !ok {
 		t.Fatal("text panel incorrectly required a result")
 	}
 }
@@ -426,11 +441,11 @@ func TestDiscoveryFallbackKeepsOneUserOperationPerSlot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		switch r.URL.Path {
-		case "/api/panels/query":
+		case "/api/queries/run":
 			w.Write(panelBatch(t, targets[0], 1000, 2000))
-		case "/api/annotations":
+		case "/api/annotations/query":
 			fmt.Fprint(w, `{}`)
-		case "/api/panels/exemplars":
+		case "/api/queries/exemplars":
 			fmt.Fprint(w, `{"traces":[{"trace_id":"trace","namespace":"ns"}]}`)
 		case "/api/traces/trace":
 			fmt.Fprint(w, `{"data":{"spans":[{"span_id":"span"}]}}`)
@@ -441,7 +456,7 @@ func TestDiscoveryFallbackKeepsOneUserOperationPerSlot(t *testing.T) {
 	defer server.Close()
 	q := newQueryRun()
 	q.targets = targets
-	for i, want := range [][]string{{"/api/panels/query", "/api/annotations"}, {"/api/panels/exemplars"}, {"/api/traces/trace"}} {
+	for i, want := range [][]string{{"/api/queries/run", "/api/annotations/query"}, {"/api/queries/exemplars"}, {"/api/traces/trace"}} {
 		paths = nil
 		q.request(context.Background(), server.Client(), server.URL, "fanout_session=test", 2)
 		if !reflect.DeepEqual(paths, want) {

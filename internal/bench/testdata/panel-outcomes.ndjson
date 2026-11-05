@@ -1,0 +1,7 @@
+{"id":"requests","status":"ok","elapsed_ms":10,"cached":true,"fresh_to_ms":1000}
+{"id":"traffic","status":"empty","elapsed_ms":0}
+{"id":"latency","status":"error","error":"query failed","elapsed_ms":50}
+{"id":"hosts","status":"error","reason":"busy","error":"Not run: other queries kept the server busy. Refresh to try again.","elapsed_ms":0}
+{"id":"containers","status":"error","error":"The query took longer than 10 seconds. Narrow the time range or add filters.","elapsed_ms":10000}
+{"id":"versions","status":"busy","elapsed_ms":1}
+{"id":"endpoints","status":"timeout","elapsed_ms":12000}

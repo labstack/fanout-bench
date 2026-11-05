@@ -38,6 +38,7 @@ type ManagedConfig struct {
 	FanoutVersion            string
 	FanoutArtifact           string
 	Preset                   string
+	SignalSelection          string
 	Repeat                   int
 	BatchSize                int
 	QueryRate                float64
@@ -246,7 +247,7 @@ func managedRunnerConfig(managed ManagedConfig, httpAddr, dataDir string) Config
 	cfg := Config{
 		Host: managed.ProvisionedHost, HostDescription: managed.HostDescription,
 		SSHPort: managed.ProvisionedSSHPort, SSHIdentity: managed.ProvisionedSSHIdentity,
-		Preset: managed.Preset, Repeat: managed.Repeat, BatchSize: managed.BatchSize,
+		SignalSelection: managed.SignalSelection, Preset: managed.Preset, Repeat: managed.Repeat, BatchSize: managed.BatchSize,
 		Endpoint: httpAddr, MetricsURL: "http://" + httpAddr + "/metrics", QueryURL: "http://" + httpAddr,
 		Insecure: true, Telemetrygen: managed.TelemetrygenPath, OutputDir: managed.OutputDir,
 		FanoutVersion: managed.FanoutVersion, FanoutArtifact: managed.FanoutArtifact, DataDir: dataDir,

@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+parallel_groups=false
+if [[ ${1:-} == --parallel-groups ]]; then
+    parallel_groups=true
+    shift
+fi
+
 if [[ $# -eq 0 ]]; then
-    echo "Usage: scripts/hetzner.sh <fanout-bench run flags…> [-- <fanout-bench run flags…>]…" >&2
-    echo "Each nonempty group shares the Fanout and generator VMs; SSH port and identity must agree across groups." >&2
+    echo "Usage: scripts/hetzner.sh [--parallel-groups] <fanout-bench run flags…> [-- <fanout-bench run flags…>]…" >&2
+    echo "Groups share one pair by default; --parallel-groups gives each its own pair. SSH settings must agree." >&2
     exit 2
 fi
 
@@ -86,7 +92,81 @@ done
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
-just build
+# Parallel children reuse the binary built by their parent.
+if [[ ${FANOUT_BENCH_GROUP_CHILD:-} != 1 ]]; then
+    just build
+fi
+
+if [[ $parallel_groups == true ]]; then
+    pair_pids=()
+    pair_statuses=()
+    launching_group=false
+    interrupted_status=
+    # Each child owns the existing single-pair EXIT cleanup, including failed
+    # creates. Signal all children before waiting, so every pair starts cleanup.
+    # shellcheck disable=SC2317,SC2329
+    cleanup_groups() {
+        local status=$? pid
+        trap - EXIT
+        trap '' INT TERM
+        if [[ ${#pair_pids[@]} -gt 0 ]]; then
+            for pid in "${pair_pids[@]}"; do
+                kill -TERM "$pid" 2>/dev/null || true
+            done
+            for pid in "${pair_pids[@]}"; do
+                wait "$pid" 2>/dev/null || true
+            done
+        fi
+        exit "$status"
+    }
+    trap cleanup_groups EXIT
+    # Defer a signal across fork/PID registration so no child is untracked.
+    # shellcheck disable=SC2317,SC2329
+    interrupt_groups() {
+        if [[ $launching_group == true ]]; then
+            interrupted_status=$1
+        else
+            exit "$1"
+        fi
+    }
+    trap 'interrupt_groups 130' INT
+    trap 'interrupt_groups 143' TERM
+    parallel_output="results/parallel-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+    offset=1
+    group_index=0
+    for group_length in "${group_lengths[@]}"; do
+        group_index=$((group_index + 1))
+        child_args=("${@:offset:group_length}")
+        has_output=false
+        for arg in "${child_args[@]}"; do
+            case "$arg" in --output|-output|--output=*|-output=*) has_output=true ;; esac
+        done
+        if [[ $has_output == false ]]; then
+            child_args+=(--output "$parallel_output/group-$group_index")
+        fi
+        launching_group=true
+        FANOUT_BENCH_GROUP_CHILD=1 FANOUT_BENCH_GROUP_INDEX=$group_index \
+            bash "$repo_dir/scripts/hetzner.sh" "${child_args[@]}" <&0 &
+        pair_pids+=("$!")
+        launching_group=false
+        if [[ -n $interrupted_status ]]; then exit "$interrupted_status"; fi
+        offset=$((offset + group_length + 1))
+    done
+    status=0
+    for index in "${!pair_pids[@]}"; do
+        child_status=0
+        wait "${pair_pids[index]}" || child_status=$?
+        unset 'pair_pids[index]'
+        pair_statuses+=("$child_status")
+        if [[ $child_status -ne 0 ]]; then status=1; fi
+    done
+    for index in "${!pair_statuses[@]}"; do
+        printf 'Parallel group %d/%d: exit %d (includes pair cleanup)\n' "$((index + 1))" "$group_count" "${pair_statuses[index]}"
+    done
+    # All children were reaped, including their EXIT traps; avoid PID reuse.
+    trap - EXIT INT TERM
+    exit "$status"
+fi
 
 key_args=()
 IFS=',' read -r -a keys <<< "$FANOUT_BENCH_HCLOUD_SSH_KEY"
@@ -105,6 +185,7 @@ nonce=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 name="fanout-bench-$(date -u +%Y%m%dT%H%M%SZ)-$nonce"
 fanout_name="$name-fanout"
 generator_name="$name-generator"
+printf 'Hetzner pair: group=%s Fanout=%s generator=%s network=%s\n' "${FANOUT_BENCH_GROUP_INDEX:-shared}" "$fanout_name" "$generator_name" "$name"
 network_attempted=false
 fanout_attempted=false
 generator_attempted=false

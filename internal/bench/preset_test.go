@@ -92,3 +92,92 @@ func TestOverridesProduceOneDiagnosticTopology(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalPlanKeepsPublishShapeOnUpperSweepPoints(t *testing.T) {
+	plan, err := Plan(Config{Preset: "local", Repeat: 1, BatchSize: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 14 {
+		t.Fatalf("phases=%d want 14", len(plan))
+	}
+	if p := plan[0]; p.Kind != "warmup" || p.Duration != 15*time.Second {
+		t.Fatalf("warmup changed: %+v", p)
+	}
+	if p := plan[len(plan)-1]; p.Kind != "sustained" || p.Signal != Mixed || p.Duration != 5*time.Minute || p.ProcessesPerSignal != 0 {
+		t.Fatalf("sustained changed: %+v", p)
+	}
+	var total time.Duration
+	for _, signal := range []Signal{Traces, Logs, Metrics, Mixed} {
+		var processes []int
+		for _, phase := range plan {
+			total += 0
+			if phase.Kind != "sweep" || phase.Signal != signal {
+				continue
+			}
+			processes = append(processes, phase.ProcessesPerSignal)
+			if phase.WorkersPerProcess != 8 || phase.RatePerWorker != 2500 || phase.Duration != 30*time.Second {
+				t.Fatalf("local shape changed: %+v", phase)
+			}
+		}
+		if !slices.Equal(processes, []int{8, 16, 32}) {
+			t.Errorf("%s: processes=%v", signal, processes)
+		}
+	}
+	for _, phase := range plan {
+		total += phase.Duration
+	}
+	if total > 12*time.Minute {
+		t.Errorf("load time %s exceeds the 12 minute budget", total)
+	}
+}
+
+func TestMixedOnlyPlan(t *testing.T) {
+	for _, preset := range []string{"publish", "validate"} {
+		plan, err := Plan(Config{Preset: preset, Repeat: 3, BatchSize: 1000, SignalSelection: "mixed", QueryRate: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan) != 23 {
+			t.Fatalf("%s phases=%d", preset, len(plan))
+		}
+		for _, p := range plan {
+			if p.Signal != Mixed {
+				t.Fatalf("unexpected single-signal phase: %+v", p)
+			}
+			if p.Kind != "warmup" && p.QueryRate != 20 {
+				t.Fatal("missing reads")
+			}
+		}
+		last := plan[len(plan)-1]
+		if last.Kind != "sustained" || last.Duration != 5*time.Minute || last.ProcessesPerSignal != 0 {
+			t.Fatal(last)
+		}
+	}
+	if _, err := Plan(Config{Preset: "publish", SignalSelection: "logs", Repeat: 1, BatchSize: 1000}); err == nil {
+		t.Fatal("invalid selection accepted")
+	}
+}
+
+func TestValidationUsesPublishShape(t *testing.T) {
+	cfg := Config{Preset: "validate", Repeat: 3, BatchSize: 1000}
+	a, err := Plan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Preset = "publish"
+	b, err := Plan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(a, b) {
+		t.Fatal("validation changed load shape")
+	}
+	if settingsFrom(cfg).EarlyStop {
+		t.Fatal("publish early stop enabled")
+	}
+	cfg.Preset = "validate"
+	if !settingsFrom(cfg).EarlyStop {
+		t.Fatal("validate early stop disabled")
+	}
+}

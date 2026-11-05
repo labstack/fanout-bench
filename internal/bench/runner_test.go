@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -101,6 +103,11 @@ fanout_telemetry_operation_duration_seconds_count{operation="ingest"} 100
 fanout_parquet_publish_wait_seconds_sum{signal="spans"} 11
 fanout_parquet_publish_wait_seconds_sum{signal="logs"} 0.5
 fanout_ingest_backpressure_seconds_total 12.5
+fanout_ingest_throttled_total{reason="debt"} 14
+fanout_ingest_throttled_total{reason="reads"} 15
+fanout_compaction_retired_batches_total 128
+fanout_ingest_admission_rows_per_second 20000
+fanout_compaction_pass_seconds_sum 16
 fanout_compaction_backlog_batches 13
 `
 	snap, err := parsePrometheus(strings.NewReader(fixture))
@@ -119,6 +126,10 @@ fanout_compaction_backlog_batches 13
 		PublishWaitSecondsTotal:        11.5,
 		IngestBackpressureSecondsTotal: 12.5,
 		CompactionBacklogBatches:       13,
+		IngestThrottledTotal:           map[string]float64{"debt": 14, "reads": 15},
+		CompactionRetiredBatchesTotal:  128,
+		IngestAdmissionRowsPerSecond:   20000,
+		CompactionPassSecondsTotal:     16,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sample=%+v; want %+v", got, want)
@@ -190,7 +201,7 @@ func TestRunPhaseStopsQueriesBeforeFinalGeneratorCPURead(t *testing.T) {
 		Config:       Config{GeneratorSSH: "unused", MetricsURL: "http://bench/metrics", QueryURL: "http://bench", SampleInterval: time.Hour},
 		queryTargets: newQueryRun().targets,
 		client: &http.Client{Transport: releaseTransport(func(req *http.Request) (*http.Response, error) {
-			body := `{"results":[{"status":"empty"}]}`
+			body := `{"status":"empty"}`
 			if req.URL.Path == "/metrics" {
 				scrapes++
 				if scrapes == 2 {
@@ -413,7 +424,7 @@ func TestSecretRedactionAndBoundedOutput(t *testing.T) {
 }
 
 func TestBestMixedTopologyUsesAcceptedThroughput(t *testing.T) {
-	trials := []Trial{{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8}, AcceptedPerSecond: 100}, {Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 4}, AcceptedPerSecond: 200}}
+	trials := []Trial{{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8}, Accepted: Counts{Spans: 1}, AcceptedPerSecond: 100}, {Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 4}, Accepted: Counts{Spans: 1}, AcceptedPerSecond: 200}}
 	if got := bestMixedTopology(trials); got != 4 {
 		t.Fatalf("got %d want 4", got)
 	}
@@ -421,8 +432,8 @@ func TestBestMixedTopologyUsesAcceptedThroughput(t *testing.T) {
 
 func TestBestMixedTopologyRequiresRequestedQueryLoad(t *testing.T) {
 	trials := []Trial{
-		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8, QueryRate: 100}, ElapsedSeconds: 10, AcceptedPerSecond: 200, QueryLatency: Latency{Count: 800}, QueryShed: 10},
-		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 4, QueryRate: 100}, ElapsedSeconds: 10, AcceptedPerSecond: 150, QueryLatency: Latency{Count: 980}},
+		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8, QueryRate: 100}, ElapsedSeconds: 10, Accepted: Counts{Spans: 1}, AcceptedPerSecond: 200, QueryLatency: Latency{Count: 800}, QueryShed: 10},
+		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 4, QueryRate: 100}, ElapsedSeconds: 10, Accepted: Counts{Spans: 1}, AcceptedPerSecond: 150, QueryLatency: Latency{Count: 980}},
 	}
 	if got := bestMixedTopology(trials); got != 4 {
 		t.Fatalf("got %d want 4", got)
@@ -431,8 +442,8 @@ func TestBestMixedTopologyRequiresRequestedQueryLoad(t *testing.T) {
 
 func TestBestMixedTopologyFallsBackToBestReadCompletion(t *testing.T) {
 	trials := []Trial{
-		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8, QueryRate: 100}, ElapsedSeconds: 10, AcceptedPerSecond: 200, QueryLatency: Latency{Count: 100}},
-		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 1, QueryRate: 100}, ElapsedSeconds: 10, AcceptedPerSecond: 50, QueryLatency: Latency{Count: 500}},
+		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8, QueryRate: 100}, ElapsedSeconds: 10, Accepted: Counts{Spans: 1}, AcceptedPerSecond: 200, QueryLatency: Latency{Count: 100}},
+		{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 1, QueryRate: 100}, ElapsedSeconds: 10, Accepted: Counts{Spans: 1}, AcceptedPerSecond: 50, QueryLatency: Latency{Count: 500}},
 	}
 	if got := bestMixedTopology(trials); got != 1 {
 		t.Fatalf("got %d want 1", got)
@@ -468,5 +479,61 @@ func TestAbandonKeepsCompletedPhasesAndMarksReportFailed(t *testing.T) {
 	}
 	if strings.Contains(reason, "ingest-secret") {
 		t.Fatalf("gate detail leaked the ingest token: %q", reason)
+	}
+}
+
+func TestGeneratorProcessDetailIncludesFirstFatalLine(t *testing.T) {
+	trials := []Trial{{ClassificationNotes: []string{"telemetrygen: startup\nFATAL failed to export batch: DeadlineExceeded\nFATAL later"}}}
+	got := generatorProcessDetail(false, trials)
+	if got != "at least one failed; FATAL failed to export batch: DeadlineExceeded" {
+		t.Fatal(got)
+	}
+	if got := generatorProcessDetail(true, trials); got != "all exited successfully" {
+		t.Fatal(got)
+	}
+}
+
+func TestRetriedThrottlingDoesNotInvalidateGenerator(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		exit         int
+	}{
+		{"retried", "ResourceExhausted: retrying export\nexported batch", 0},
+		{"dead", "FATAL failed to export batch: exporter export timeout: ResourceExhausted", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "telemetrygen")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nexit %d\n", tc.output, tc.exit)
+			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			r := Runner{Config: Config{Telemetrygen: path}}
+			err := r.runGenerator(t.Context(), Logs, PhaseSpec{Duration: time.Second})
+			if (err != nil) != (tc.exit != 0) {
+				t.Fatalf("exit=%d err=%v", tc.exit, err)
+			}
+		})
+	}
+}
+
+func TestThrottledTrialRemainsValidButExporterDeathDoesNot(t *testing.T) {
+	trial := Trial{Spec: PhaseSpec{Signal: Mixed, Kind: "sweep", ProcessesPerSignal: 8},
+		Accepted: Counts{Spans: 100}, AcceptedPerSecond: 100, AcceptanceRatio: .1,
+		Samples: []ResourceSample{{IngestThrottledTotal: map[string]float64{"reads": 1000}}}}
+	if class, _ := classify(trial, nil); class == "invalid" {
+		t.Fatal("retryable throttling invalidated accepted counters")
+	}
+	if got := bestMixedTopology([]Trial{trial}); got != 8 {
+		t.Fatalf("topology=%d", got)
+	}
+	for _, change := range []func(*Trial){func(t *Trial) { t.GeneratorFailures = 1 }, func(t *Trial) { t.RowsDropped = 1 }, func(t *Trial) { t.ProcessRestarted = true }, func(t *Trial) { t.Accepted = Counts{} }} {
+		failed := trial
+		change(&failed)
+		if class, _ := classify(failed, nil); class != "invalid" {
+			t.Fatal("real failure hidden")
+		}
+		if bestMixedTopology([]Trial{failed}) != 0 {
+			t.Fatal("invalid evidence selected for sustained phase")
+		}
 	}
 }
