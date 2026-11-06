@@ -1,7 +1,7 @@
 {
-  "release": "v2026.10.8-alpha",
-  "artifact": "https://github.com/labstack/fanout/releases/download/v2026.10.8-alpha/fanout_v2026.10.8-alpha_linux_amd64.tar.gz#sha256=b314920221693683b7d6ff42787a37e82bee1fbdd7ddcc8647d1905f7629ac6b",
-  "harness_commit": "8f5864ba488d9802f68250d85f67b6658ab13af5",
+  "release": "v2026.11.0-alpha",
+  "artifact": "https://github.com/labstack/fanout/releases/download/v2026.11.0-alpha/fanout_v2026.11.0-alpha_linux_amd64.tar.gz#sha256=1e83657b9eb0ff7e7ad406bd5162642badf087c380448deebd1f88b183656ddc",
+  "harness_commit": "5462cbbcde9c49521c918c45f45312493aa4bb24",
   "harness_dirty": false,
   "telemetrygen": "v0.157.0",
   "host": {
@@ -11,22 +11,22 @@
     "architecture": "amd64",
     "cpu_model": "AMD EPYC-Milan Processor",
     "logical_cpus": 8,
-    "memory_bytes": 32857198592,
-    "go_version": "go1.27.2",
-    "hostname": "fanout-bench-20261016T173444Z-c141d446-fanout",
+    "memory_bytes": 32857186304,
+    "go_version": "go1.27.3",
+    "hostname": "fanout-bench-20261106T041348Z-7a50c7f9-fanout",
     "generator_on_target_host": false
   },
-  "started_at": "2026-10-16T17:36:45.61861936Z",
-  "finished_at": "2026-10-16T18:27:09.526248663Z",
-  "run_id": "20261016T173645Z",
+  "started_at": "2026-11-06T04:15:54.556185113Z",
+  "finished_at": "2026-11-06T05:06:33.708327853Z",
+  "run_id": "20261106T041554Z",
   "batch_size": 1000,
   "repeat": 3,
   "transport": "plaintext gRPC",
   "gates_passed": true,
   "accepted_total": {
-    "spans": 135133541,
-    "log_records": 210698970,
-    "metric_points": 229999166
+    "spans": 145879781,
+    "log_records": 265470588,
+    "metric_points": 255924526
   },
   "sweeps": [
     {
@@ -35,14 +35,14 @@
         {
           "processes_per_signal": 1,
           "accepted_per_rep": [
-            12634,
-            12829,
-            12628
+            12720,
+            12625,
+            12759
           ],
-          "median": 12634,
-          "min": 12628,
-          "max": 12829,
-          "fanout_cpu_median": 3.63,
+          "median": 12720,
+          "min": 12625,
+          "max": 12759,
+          "fanout_cpu_median": 5.82,
           "generator_cpu_median": 0.22,
           "classifications": [
             "saturated-or-generator-limited",
@@ -53,15 +53,15 @@
         {
           "processes_per_signal": 2,
           "accepted_per_rep": [
-            25771,
-            25759,
-            24687
+            25184,
+            24974,
+            25111
           ],
-          "median": 25759,
-          "min": 24687,
-          "max": 25771,
-          "fanout_cpu_median": 0.52,
-          "generator_cpu_median": 0.45,
+          "median": 25111,
+          "min": 24974,
+          "max": 25184,
+          "fanout_cpu_median": 5.92,
+          "generator_cpu_median": 0.47,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -71,15 +71,15 @@
         {
           "processes_per_signal": 4,
           "accepted_per_rep": [
-            49973,
-            49485,
-            49365
+            49782,
+            50115,
+            50053
           ],
-          "median": 49485,
-          "min": 49365,
-          "max": 49973,
-          "fanout_cpu_median": 2.93,
-          "generator_cpu_median": 0.94,
+          "median": 50053,
+          "min": 49782,
+          "max": 50115,
+          "fanout_cpu_median": 2.07,
+          "generator_cpu_median": 1.02,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -89,15 +89,15 @@
         {
           "processes_per_signal": 8,
           "accepted_per_rep": [
-            101109,
-            103201,
-            101384
+            97248,
+            98038,
+            95989
           ],
-          "median": 101384,
-          "min": 101109,
-          "max": 103201,
-          "fanout_cpu_median": 2.02,
-          "generator_cpu_median": 1.63,
+          "median": 97248,
+          "min": 95989,
+          "max": 98038,
+          "fanout_cpu_median": 2.17,
+          "generator_cpu_median": 1.79,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -107,15 +107,15 @@
         {
           "processes_per_signal": 16,
           "accepted_per_rep": [
-            144120,
-            184552,
-            151645
+            197366,
+            196366,
+            197201
           ],
-          "median": 151645,
-          "min": 144120,
-          "max": 184552,
-          "fanout_cpu_median": 7.38,
-          "generator_cpu_median": 2.02,
+          "median": 197201,
+          "min": 196366,
+          "max": 197366,
+          "fanout_cpu_median": 2.11,
+          "generator_cpu_median": 2.18,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -125,15 +125,15 @@
         {
           "processes_per_signal": 32,
           "accepted_per_rep": [
-            300455,
-            282251,
-            234547
+            370209,
+            364916,
+            366244
           ],
-          "median": 282251,
-          "min": 234547,
-          "max": 300455,
-          "fanout_cpu_median": 4.7,
-          "generator_cpu_median": 3.14,
+          "median": 366244,
+          "min": 364916,
+          "max": 370209,
+          "fanout_cpu_median": 5.24,
+          "generator_cpu_median": 3.66,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -143,15 +143,15 @@
         {
           "processes_per_signal": 64,
           "accepted_per_rep": [
-            393976,
-            387579,
-            353862
+            648672,
+            558932,
+            622229
           ],
-          "median": 387579,
-          "min": 353862,
-          "max": 393976,
-          "fanout_cpu_median": 6.85,
-          "generator_cpu_median": 4.63,
+          "median": 622229,
+          "min": 558932,
+          "max": 648672,
+          "fanout_cpu_median": 6.02,
+          "generator_cpu_median": 6.38,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -166,14 +166,14 @@
         {
           "processes_per_signal": 1,
           "accepted_per_rep": [
-            12983,
-            12979,
-            13064
+            12816,
+            12801,
+            12728
           ],
-          "median": 12983,
-          "min": 12979,
-          "max": 13064,
-          "fanout_cpu_median": 2.4,
+          "median": 12801,
+          "min": 12728,
+          "max": 12816,
+          "fanout_cpu_median": 3.46,
           "generator_cpu_median": 0.17,
           "classifications": [
             "saturated-or-generator-limited",
@@ -184,15 +184,15 @@
         {
           "processes_per_signal": 2,
           "accepted_per_rep": [
-            25338,
-            25334,
-            26069
+            25409,
+            25580,
+            25459
           ],
-          "median": 25338,
-          "min": 25334,
-          "max": 26069,
-          "fanout_cpu_median": 3.8,
-          "generator_cpu_median": 0.36,
+          "median": 25459,
+          "min": 25409,
+          "max": 25580,
+          "fanout_cpu_median": 1.23,
+          "generator_cpu_median": 0.37,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -202,15 +202,15 @@
         {
           "processes_per_signal": 4,
           "accepted_per_rep": [
-            47331,
-            47784,
-            48182
+            50263,
+            50759,
+            50252
           ],
-          "median": 47784,
-          "min": 47331,
-          "max": 48182,
-          "fanout_cpu_median": 4.82,
-          "generator_cpu_median": 0.72,
+          "median": 50263,
+          "min": 50252,
+          "max": 50759,
+          "fanout_cpu_median": 2.49,
+          "generator_cpu_median": 0.79,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -220,15 +220,15 @@
         {
           "processes_per_signal": 8,
           "accepted_per_rep": [
-            84021,
-            105921,
-            86388
+            97296,
+            98618,
+            98095
           ],
-          "median": 86388,
-          "min": 84021,
-          "max": 105921,
-          "fanout_cpu_median": 4.28,
-          "generator_cpu_median": 1.31,
+          "median": 98095,
+          "min": 97296,
+          "max": 98618,
+          "fanout_cpu_median": 1.69,
+          "generator_cpu_median": 1.42,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -238,15 +238,15 @@
         {
           "processes_per_signal": 16,
           "accepted_per_rep": [
-            200063,
-            189639,
-            190894
+            194544,
+            196265,
+            195099
           ],
-          "median": 190894,
-          "min": 189639,
-          "max": 200063,
-          "fanout_cpu_median": 3.82,
-          "generator_cpu_median": 1.8,
+          "median": 195099,
+          "min": 194544,
+          "max": 196265,
+          "fanout_cpu_median": 3.07,
+          "generator_cpu_median": 2.09,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -256,15 +256,15 @@
         {
           "processes_per_signal": 32,
           "accepted_per_rep": [
-            351972,
-            257260,
-            301283
+            377992,
+            378840,
+            359873
           ],
-          "median": 301283,
-          "min": 257260,
-          "max": 351972,
-          "fanout_cpu_median": 5.36,
-          "generator_cpu_median": 2.86,
+          "median": 377992,
+          "min": 359873,
+          "max": 378840,
+          "fanout_cpu_median": 4.37,
+          "generator_cpu_median": 2.98,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -274,15 +274,15 @@
         {
           "processes_per_signal": 64,
           "accepted_per_rep": [
-            561000,
-            524878,
-            472496
+            488431,
+            486759,
+            532625
           ],
-          "median": 524878,
-          "min": 472496,
-          "max": 561000,
-          "fanout_cpu_median": 6.06,
-          "generator_cpu_median": 5.31,
+          "median": 488431,
+          "min": 486759,
+          "max": 532625,
+          "fanout_cpu_median": 6.35,
+          "generator_cpu_median": 4.71,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -297,15 +297,15 @@
         {
           "processes_per_signal": 1,
           "accepted_per_rep": [
-            39149,
-            39041,
-            38296
+            38820,
+            39227,
+            38640
           ],
-          "median": 39041,
-          "min": 38296,
-          "max": 39149,
-          "fanout_cpu_median": 4.72,
-          "generator_cpu_median": 0.8,
+          "median": 38820,
+          "min": 38640,
+          "max": 39227,
+          "fanout_cpu_median": 5.47,
+          "generator_cpu_median": 0.82,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -315,15 +315,15 @@
         {
           "processes_per_signal": 2,
           "accepted_per_rep": [
-            77784,
-            78573,
-            75221
+            76587,
+            76741,
+            76483
           ],
-          "median": 77784,
-          "min": 75221,
-          "max": 78573,
-          "fanout_cpu_median": 4.3,
-          "generator_cpu_median": 1.77,
+          "median": 76587,
+          "min": 76483,
+          "max": 76741,
+          "fanout_cpu_median": 6.15,
+          "generator_cpu_median": 1.71,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -333,15 +333,15 @@
         {
           "processes_per_signal": 4,
           "accepted_per_rep": [
-            155962,
-            146792,
-            146445
+            155707,
+            155156,
+            149499
           ],
-          "median": 146792,
-          "min": 146445,
-          "max": 155962,
-          "fanout_cpu_median": 4.86,
-          "generator_cpu_median": 1.87,
+          "median": 155156,
+          "min": 149499,
+          "max": 155707,
+          "fanout_cpu_median": 5.91,
+          "generator_cpu_median": 2.16,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -351,15 +351,15 @@
         {
           "processes_per_signal": 8,
           "accepted_per_rep": [
-            216861,
-            223985,
-            238993
+            270231,
+            262749,
+            261501
           ],
-          "median": 223985,
-          "min": 216861,
-          "max": 238993,
-          "fanout_cpu_median": 6.06,
-          "generator_cpu_median": 3.03,
+          "median": 262749,
+          "min": 261501,
+          "max": 270231,
+          "fanout_cpu_median": 7.01,
+          "generator_cpu_median": 2.93,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -369,15 +369,15 @@
         {
           "processes_per_signal": 16,
           "accepted_per_rep": [
-            379219,
-            359086,
-            335283
+            429748,
+            380026,
+            323029
           ],
-          "median": 359086,
-          "min": 335283,
-          "max": 379219,
-          "fanout_cpu_median": 6.35,
-          "generator_cpu_median": 5.78,
+          "median": 380026,
+          "min": 323029,
+          "max": 429748,
+          "fanout_cpu_median": 7.33,
+          "generator_cpu_median": 5.0,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -387,33 +387,33 @@
         {
           "processes_per_signal": 32,
           "accepted_per_rep": [
-            433339,
-            402062,
-            357956
+            450588,
+            442361,
+            432734
           ],
-          "median": 402062,
-          "min": 357956,
-          "max": 433339,
-          "fanout_cpu_median": 7.07,
-          "generator_cpu_median": 7.34,
+          "median": 442361,
+          "min": 432734,
+          "max": 450588,
+          "fanout_cpu_median": 7.37,
+          "generator_cpu_median": 7.14,
           "classifications": [
-            "generator-limited",
-            "generator-limited",
-            "generator-limited"
+            "saturated",
+            "saturated-or-generator-limited",
+            "saturated-or-generator-limited"
           ]
         },
         {
           "processes_per_signal": 64,
           "accepted_per_rep": [
-            385274,
-            384289,
-            414315
+            485193,
+            453181,
+            460640
           ],
-          "median": 385274,
-          "min": 384289,
-          "max": 414315,
-          "fanout_cpu_median": 6.86,
-          "generator_cpu_median": 7.35,
+          "median": 460640,
+          "min": 453181,
+          "max": 485193,
+          "fanout_cpu_median": 7.22,
+          "generator_cpu_median": 7.39,
           "classifications": [
             "generator-limited",
             "generator-limited",
@@ -428,15 +428,15 @@
         {
           "processes_per_signal": 1,
           "accepted_per_rep": [
-            13699,
-            13620,
-            13619
+            13705,
+            13709,
+            13633
           ],
-          "median": 13620,
-          "min": 13619,
-          "max": 13699,
-          "fanout_cpu_median": 4.78,
-          "generator_cpu_median": 0.32,
+          "median": 13705,
+          "min": 13633,
+          "max": 13709,
+          "fanout_cpu_median": 5.71,
+          "generator_cpu_median": 0.33,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -446,15 +446,15 @@
         {
           "processes_per_signal": 2,
           "accepted_per_rep": [
-            27318,
-            27131,
-            26662
+            27283,
+            27295,
+            27227
           ],
-          "median": 27131,
-          "min": 26662,
-          "max": 27318,
-          "fanout_cpu_median": 4.75,
-          "generator_cpu_median": 0.7,
+          "median": 27283,
+          "min": 27227,
+          "max": 27295,
+          "fanout_cpu_median": 5.37,
+          "generator_cpu_median": 0.71,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -464,14 +464,14 @@
         {
           "processes_per_signal": 4,
           "accepted_per_rep": [
-            54500,
-            54472,
-            52886
+            54716,
+            54462,
+            54584
           ],
-          "median": 54472,
-          "min": 52886,
-          "max": 54500,
-          "fanout_cpu_median": 3.58,
+          "median": 54584,
+          "min": 54462,
+          "max": 54716,
+          "fanout_cpu_median": 4.38,
           "generator_cpu_median": 1.56,
           "classifications": [
             "saturated-or-generator-limited",
@@ -482,15 +482,15 @@
         {
           "processes_per_signal": 8,
           "accepted_per_rep": [
-            107347,
-            109337,
-            105220
+            111893,
+            110326,
+            106840
           ],
-          "median": 107347,
-          "min": 105220,
-          "max": 109337,
-          "fanout_cpu_median": 4.26,
-          "generator_cpu_median": 2.19,
+          "median": 110326,
+          "min": 106840,
+          "max": 111893,
+          "fanout_cpu_median": 5.65,
+          "generator_cpu_median": 2.25,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -500,15 +500,15 @@
         {
           "processes_per_signal": 16,
           "accepted_per_rep": [
-            209724,
-            187925,
-            149404
+            205825,
+            192605,
+            156783
           ],
-          "median": 187925,
-          "min": 149404,
-          "max": 209724,
-          "fanout_cpu_median": 5.21,
-          "generator_cpu_median": 2.82,
+          "median": 192605,
+          "min": 156783,
+          "max": 205825,
+          "fanout_cpu_median": 5.64,
+          "generator_cpu_median": 2.55,
           "classifications": [
             "saturated-or-generator-limited",
             "saturated-or-generator-limited",
@@ -518,52 +518,52 @@
         {
           "processes_per_signal": 32,
           "accepted_per_rep": [
-            295566,
-            248901,
-            207920
+            232227,
+            164978,
+            243741
           ],
-          "median": 248901,
-          "min": 207920,
-          "max": 295566,
-          "fanout_cpu_median": 6.22,
-          "generator_cpu_median": 5.19,
+          "median": 232227,
+          "min": 164978,
+          "max": 243741,
+          "fanout_cpu_median": 6.75,
+          "generator_cpu_median": 3.95,
           "classifications": [
             "saturated-or-generator-limited",
-            "saturated-or-generator-limited",
+            "saturated",
             "saturated-or-generator-limited"
           ]
         },
         {
           "processes_per_signal": 64,
           "accepted_per_rep": [
-            231153,
-            213246,
-            221096
+            330450,
+            297345,
+            192120
           ],
-          "median": 221096,
-          "min": 213246,
-          "max": 231153,
-          "fanout_cpu_median": 5.84,
-          "generator_cpu_median": 7.39,
+          "median": 297345,
+          "min": 192120,
+          "max": 330450,
+          "fanout_cpu_median": 6.97,
+          "generator_cpu_median": 7.24,
           "classifications": [
             "generator-limited",
-            "saturated",
-            "generator-limited"
+            "generator-limited",
+            "saturated"
           ]
         }
       ]
     }
   ],
   "sustained": {
-    "processes_per_signal": 32,
-    "seconds": 303.5,
-    "accepted_per_second": 415859,
-    "spans_per_second": 57037,
-    "log_records_per_second": 179134,
-    "metric_points_per_second": 179688,
-    "fanout_cpu": 7.24,
-    "peak_rss_gib": 11.4,
-    "generator_cpu": 7.44,
+    "processes_per_signal": 64,
+    "seconds": 306.8,
+    "accepted_per_second": 507311,
+    "spans_per_second": 61571,
+    "log_records_per_second": 224112,
+    "metric_points_per_second": 221628,
+    "fanout_cpu": 7.73,
+    "peak_rss_gib": 10.6,
+    "generator_cpu": 7.93,
     "classification": "generator-limited"
   }
 }
